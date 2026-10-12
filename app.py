@@ -3,11 +3,20 @@ import datetime
 import requests
 import threading
 import os
+import time
+import hmac
 import json
-from flask import Flask, render_template, request, jsonify, Response
+from flask import Flask, render_template, request, jsonify, Response, session, redirect, url_for
 import config
 
 app = Flask(__name__, template_folder='.')
+app.secret_key = config.SECRET_KEY
+app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE='Lax',
+                  PERMANENT_SESSION_LIFETIME=datetime.timedelta(days=7))
+
+login_failures = {}
+MAX_FAILURES = 5
+LOCKOUT_SECONDS = 300
 
 # [설정] 디스코드 웹훅 URL (본인의 주소로 변경하세요)
 DISCORD_WEBHOOK_URL = config.DISCORD_WEBHOOK_URL
@@ -200,6 +209,45 @@ def generate_frames():
         yield (b'--frame\r\n'
                b'Content-Type: image/jpeg\r\n\r\n' + bytearray(encoded_image) + b'\r\n')
 
+@app.before_request
+def require_login():
+    if request.endpoint in ('login', 'static') or session.get('logged_in'):
+        return
+    if request.method == 'POST' and request.is_json:
+        return jsonify({"success": False, "message": "로그인이 필요합니다."}), 401
+    return redirect(url_for('login'))
+
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    error = None
+    if request.method == 'POST':
+        ip = get_client_ip()
+        count, last = login_failures.get(ip, (0, 0))
+        if count >= MAX_FAILURES and time.time() - last < LOCKOUT_SECONDS:
+            error = "시도 횟수 초과. 5분 뒤 다시 시도하세요."
+        elif hmac.compare_digest(request.form.get('password', ''), config.ADMIN_PASSWORD):
+            login_failures.pop(ip, None)
+            session.clear()
+            session['logged_in'] = True
+            session.permanent = True
+            return redirect(url_for('index'))
+        else:
+            login_failures[ip] = (count + 1 if time.time() - last < LOCKOUT_SECONDS else 1, time.time())
+            error = "비밀번호가 올바르지 않습니다."
+            threading.Thread(target=send_login_fail_alert, args=(ip,), daemon=True).start()
+    return render_template('login.html', error=error)
+
+@app.route('/logout')
+def logout():
+    session.clear()
+    return redirect(url_for('login'))
+
+def send_login_fail_alert(ip):
+    try:
+        requests.post(DISCORD_WEBHOOK_URL, json={"content": f"⚠️ **[로그인 실패]** IP `{ip}` 에서 잘못된 비밀번호 입력"}, timeout=5)
+    except Exception as e:
+        print(f"디스코드 전송 에러: {e}")
+
 @app.route('/')
 def index():
     return render_template('index.html', status=system_status)
@@ -241,4 +289,4 @@ def toggle_feature():
     return jsonify({"success": False, "message": "잘못된 요청입니다."}), 400
 
 if __name__ == '__main__':
-    app.run(debug=True, port=5000)
+    app.run(host='0.0.0.0', port=5000, debug=False, threaded=True)
