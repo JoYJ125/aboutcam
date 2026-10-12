@@ -1,5 +1,6 @@
 config.py
 recordings/
+known_ips.json
 *.jpg
 __pycache__/
 *.pyc

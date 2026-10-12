@@ -3,6 +3,7 @@ import datetime
 import requests
 import threading
 import os
+import json
 from flask import Flask, render_template, request, jsonify, Response
 import config
 
@@ -29,6 +30,54 @@ frame_lock = threading.Lock()
 RECORD_DIR = "recordings"
 if not os.path.exists(RECORD_DIR):
     os.makedirs(RECORD_DIR)
+
+KNOWN_IPS_FILE = "known_ips.json"
+known_ips_lock = threading.Lock()
+
+def load_known_ips():
+    try:
+        with open(KNOWN_IPS_FILE, "r", encoding="utf-8") as f:
+            return set(json.load(f))
+    except (FileNotFoundError, ValueError):
+        return set()
+
+known_ips = load_known_ips()
+
+def save_known_ips():
+    with open(KNOWN_IPS_FILE, "w", encoding="utf-8") as f:
+        json.dump(sorted(known_ips), f)
+
+def get_client_ip():
+    """터널(Cloudflare 등)을 거치면 remote_addr가 루프백이므로 그때만 프록시 헤더를 신뢰"""
+    remote = request.remote_addr
+    if remote in ("127.0.0.1", "::1"):
+        forwarded = request.headers.get("CF-Connecting-IP") or request.headers.get("X-Forwarded-For")
+        if forwarded:
+            return forwarded.split(",")[0].strip()
+    return remote
+
+def send_new_ip_alert(ip, user_agent):
+    now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    message = f"🆕 **[새 IP 접속]** 처음 보는 IP가 접속했습니다.\nIP: `{ip}`\n시간: {now}\n기기: {user_agent[:100]}"
+    try:
+        requests.post(DISCORD_WEBHOOK_URL, json={"content": message}, timeout=5)
+    except Exception as e:
+        print(f"디스코드 전송 에러: {e}")
+
+@app.before_request
+def check_new_ip():
+    if not system_status["ip_monitoring"]:
+        return
+    ip = get_client_ip()
+    with known_ips_lock:
+        if ip in known_ips:
+            return
+        known_ips.add(ip)
+        save_known_ips()
+    print(f"[IP 감시] 새 IP 감지: {ip}")
+    threading.Thread(target=send_new_ip_alert,
+                     args=(ip, request.headers.get("User-Agent", "unknown")),
+                     daemon=True).start()
 
 def motion_detection_worker():
     """웹 대시보드와 연동된 백그라운드 모션 감지, 스트리밍, 30초 알림(텍스트만) 및 5분 고정 자동 녹화 함수"""
@@ -182,6 +231,11 @@ def toggle_feature():
         
     elif feature == 'ip_monitoring':
         system_status["ip_monitoring"] = not system_status["ip_monitoring"]
+        if system_status["ip_monitoring"]:
+            # 감시를 켠 본인 IP는 알림 없이 신뢰 목록에 등록
+            with known_ips_lock:
+                known_ips.add(get_client_ip())
+                save_known_ips()
         return jsonify({"success": True, "status": system_status["ip_monitoring"]})
     
     return jsonify({"success": False, "message": "잘못된 요청입니다."}), 400
