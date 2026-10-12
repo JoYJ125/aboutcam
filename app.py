@@ -7,7 +7,7 @@ import json
 from flask import Flask, render_template, request, jsonify, Response
 import config
 
-app = Flask(__name__)
+app = Flask(__name__, template_folder='.')
 
 # [설정] 디스코드 웹훅 URL (본인의 주소로 변경하세요)
 DISCORD_WEBHOOK_URL = config.DISCORD_WEBHOOK_URL
