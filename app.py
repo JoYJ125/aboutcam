@@ -24,7 +24,7 @@ DISCORD_WEBHOOK_URL = config.DISCORD_WEBHOOK_URL
 # 시스템 상태 및 제어용 변수
 system_status = {
     "motion_detection": False,
-    "ip_monitoring": False
+    "ip_monitoring": True
 }
 
 # 백그라운드 모션 감지 스레드용 객체
