@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>홈 CCTV 보안 관제 대시보드</title>
+    <style>
+        body { 
+            font-family: 'Malgun Gothic', sans-serif; 
+            background-color: #f4f6f9; 
+            text-align: center; 
+            margin: 0; 
+            padding: 30px 0; 
+        }
+        .card { 
+            background: white; 
+            max-width: 600px; 
+            margin: 0 auto; 
+            padding: 25px; 
+            border-radius: 12px; 
+            box-shadow: 0 4px 10px rgba(0,0,0,0.1); 
+        }
+        h1 { color: #333; font-size: 24px; margin-bottom: 5px; }
+        .subtitle { color: #666; font-size: 14px; margin-bottom: 20px; }
+        
+        /* 실시간 카메라 스트리밍 화면 박스 스타일 */
+        .video-container {
+            width: 100%;
+            background: #000;
+            border-radius: 8px;
+            overflow: hidden;
+            margin-bottom: 20px;
+            aspect-ratio: 16 / 9;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #888;
+            font-size: 14px;
+        }
+        .video-container img {
+            width: 100%;
+            height: auto;
+            display: block;
+        }
+
+        .status-box { 
+            margin: 15px 0; 
+            padding: 18px; 
+            border-radius: 8px; 
+            background: #f8f9fa; 
+            border: 1px solid #e9ecef;
+            text-align: left;
+        }
+        .status-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        button { 
+            padding: 10px 18px; 
+            font-size: 14px; 
+            font-weight: bold; 
+            border: none; 
+            border-radius: 6px; 
+            cursor: pointer; 
+            color: white; 
+            transition: background 0.2s;
+        }
+        .btn-on { background-color: #28a745; }
+        .btn-on:hover { background-color: #218838; }
+        .btn-off { background-color: #dc3545; }
+        .btn-off:hover { background-color: #c82333; }
+        .badge { font-weight: bold; }
+        .badge.on { color: #28a745; }
+        .badge.off { color: #dc3545; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h1>🏠 홈 CCTV 보안 대시보드</h1>
+        <p class="subtitle">스마트홈 관제 시스템 제어판</p>
+
+        <!-- 실시간 웹캠 스트리밍 화면 -->
+        <div class="video-container">
+            <img src="/video_feed" alt="실시간 CCTV 스트리밍 화면 (모션 감지 시작을 눌러주세요)">
+        </div>
+
+        <!-- 모션 감지 제어 박스 -->
+        <div class="status-box">
+            <div class="status-row">
+                <div>
+                    <strong>모션 감지 & 스트리밍</strong><br>
+                    <span style="font-size: 13px; color: #666;">웹캠 실시간 송출 및 30초 주기 디스코드 알림</span>
+                </div>
+                <div>
+                    <span id="motion-badge" class="badge {% if status.motion_detection %}on{% else %}off{% endif %}">
+                        {% if status.motion_detection %}작동 중 (ON){% else %}정지 (OFF){% endif %}
+                    </span>
+                </div>
+            </div>
+            <div style="margin-top: 15px; text-align: right;">
+                <button id="motion-btn" class="{% if status.motion_detection %}btn-off{% else %}btn-on{% endif %}" onclick="toggleFeature('motion_detection')">
+                    {% if status.motion_detection %}모션 감지 중지{% else %}모션 감지 시작{% endif %}
+                </button>
+            </div>
+        </div>
+
+        <!-- IP 관제 제어 박스 -->
+        <div class="status-box">
+            <div class="status-row">
+                <div>
+                    <strong>신규 IP 관제</strong><br>
+                    <span style="font-size: 13px; color: #666;">네트워크 미인가 접속 탐지 및 차단</span>
+                </div>
+                <div>
+                    <span id="ip-badge" class="badge {% if status.ip_monitoring %}on{% else %}off{% endif %}">
+                        {% if status.ip_monitoring %}작동 중 (ON){% else %}정지 (OFF){% endif %}
+                    </span>
+                </div>
+            </div>
+            <div style="margin-top: 15px; text-align: right;">
+                <button id="ip-btn" class="{% if status.ip_monitoring %}btn-off{% else %}btn-on{% endif %}" onclick="toggleFeature('ip_monitoring')">
+                    {% if status.ip_monitoring %}IP 관제 중지{% else %}IP 관제 시작{% endif %}
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        function toggleFeature(featureName) {
+            fetch('/toggle', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ feature: featureName })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    const isRunning = data.status;
+                    const badge = document.getElementById(featureName === 'motion_detection' ? 'motion-badge' : 'ip-badge');
+                    const btn = document.getElementById(featureName === 'motion_detection' ? 'motion-btn' : 'ip-btn');
+                    
+                    if (isRunning) {
+                        badge.textContent = "작동 중 (ON)";
+                        badge.className = "badge on";
+                        btn.textContent = (featureName === 'motion_detection' ? "모션 감지 중지" : "IP 관제 중지");
+                        btn.className = "btn-off";
+
+                        // [해결책] 모션 감지가 켜질 때, 웹캠 스트리밍 이미지 소스를 강제로 갱신하여 즉시 화면이 뜨도록 유도
+                        if (featureName === 'motion_detection') {
+                            setTimeout(() => {
+                                const img = document.querySelector('.video-container img');
+                                img.src = "/video_feed?" + new Date().getTime();
+                            }, 300); // 0.3초 뒤 켜진 웹캠 스트림 로드
+                        }
+                    } else {
+                        badge.textContent = "정지 (OFF)";
+                        badge.className = "badge off";
+                        btn.textContent = (featureName === 'motion_detection' ? "모션 감지 시작" : "IP 관제 시작");
+                        btn.className = "btn-on";
+                        
+                        if (featureName === 'motion_detection') {
+                            setTimeout(() => {
+                                const img = document.querySelector('.video-container img');
+                                img.src = "/video_feed?" + new Date().getTime();
+                            }, 500);
+                        }
+                    }
+                } else {
+                    alert('변경 실패: ' + data.message);
+                }
+            })
+            .catch(err => {
+                console.error('에러 발생:', err);
+                alert('서버 통신 중 에러가 발생했습니다.');
+            });
+        }
+    </script>
+</body>
+</html>

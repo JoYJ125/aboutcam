@@ -1,0 +1,5 @@
+config.py
+recordings/
+*.jpg
+__pycache__/
+*.pyc
