@@ -77,7 +77,7 @@ def send_new_ip_alert(ip, user_agent, user_id):
 
 def send_denied_ip_alert(ip, user_agent, user_id):
     now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    message = f"⛔ **[미허가 IP 차단]**\\nIP: \`{ip}\`\\n시간: {now}\\n기기: {user_agent[:100]}"
+    message = f"⛔ **[미허가 IP 차단]**\nIP: `{ip}`\n시간: {now}\n기기: {user_agent[:100]}"
     send_discord_message(accounts.user_webhook(user_id), message)
 
 @app.before_request
