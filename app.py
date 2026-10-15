@@ -6,20 +6,25 @@ import os
 import time
 import hmac
 import json
+import secrets
 from flask import Flask, render_template, request, jsonify, Response, session, redirect, url_for
 import config
+import accounts
 
 app = Flask(__name__, template_folder='.')
 app.secret_key = config.SECRET_KEY
+accounts.init_db()
+app.config['SESSION_COOKIE_SECURE'] = os.getenv('SESSION_COOKIE_SECURE', 'false').lower() == 'true'
 app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE='Lax',
                   PERMANENT_SESSION_LIFETIME=datetime.timedelta(days=7))
 
 login_failures = {}
+login_lock = threading.Lock()
 MAX_FAILURES = 5
 LOCKOUT_SECONDS = 300
 
 # [설정] 디스코드 웹훅 URL (본인의 주소로 변경하세요)
-DISCORD_WEBHOOK_URL = config.DISCORD_WEBHOOK_URL
+
 
 # 시스템 상태 및 제어용 변수
 system_status = {
@@ -58,34 +63,45 @@ def save_known_ips():
 
 def get_client_ip():
     """터널(Cloudflare 등)을 거치면 remote_addr가 루프백이므로 그때만 프록시 헤더를 신뢰"""
-    remote = request.remote_addr
-    if remote in ("127.0.0.1", "::1"):
+    remote = request.remote_addr or 'unknown'
+    if remote in {x.strip() for x in os.getenv("TRUSTED_PROXIES", "").split(",") if x.strip()}:
         forwarded = request.headers.get("CF-Connecting-IP") or request.headers.get("X-Forwarded-For")
         if forwarded:
             return forwarded.split(",")[0].strip()
     return remote
 
-def send_new_ip_alert(ip, user_agent):
+def csrf_valid():
+    expected = session.get('csrf_token', '')
+    received = request.headers.get('X-CSRF-Token', '') or request.form.get('csrf_token', '')
+    return bool(expected) and hmac.compare_digest(expected, received)
+
+def send_discord_message(webhook, message):
+    if not webhook or not accounts.validate_webhook(webhook):
+        return
+    try:
+        requests.post(webhook, json={'content': message}, timeout=5, allow_redirects=False)
+    except requests.RequestException as e:
+        print(f'Discord 전송 실패: {type(e).__name__}')
+
+def send_new_ip_alert(ip, user_agent, user_id):
     now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     message = f"🆕 **[새 IP 접속]** 처음 보는 IP가 접속했습니다.\nIP: `{ip}`\n시간: {now}\n기기: {user_agent[:100]}"
-    try:
-        requests.post(DISCORD_WEBHOOK_URL, json={"content": message}, timeout=5)
-    except Exception as e:
-        print(f"디스코드 전송 에러: {e}")
+    send_discord_message(accounts.user_webhook(user_id), message)
 
 @app.before_request
 def check_new_ip():
-    if not system_status["ip_monitoring"]:
+    if not system_status["ip_monitoring"] or not session.get("user_id") or request.endpoint in ('logout', 'static'):
         return
     ip = get_client_ip()
+    key = f"{session['user_id']}|{ip}"
     with known_ips_lock:
-        if ip in known_ips:
+        if key in known_ips:
             return
-        known_ips.add(ip)
+        known_ips.add(key)
         save_known_ips()
     print(f"[IP 감시] 새 IP 감지: {ip}")
     threading.Thread(target=send_new_ip_alert,
-                     args=(ip, request.headers.get("User-Agent", "unknown")),
+                     args=(ip, request.headers.get("User-Agent", "unknown"), session["user_id"]),
                      daemon=True).start()
 
 def motion_detection_worker():
@@ -164,7 +180,8 @@ def motion_detection_worker():
                 alert_message = f"🚨 **[보안 경고]** 움직임이 감지되어 5분 녹화가 진행 중입니다! ({current_time.strftime('%Y-%m-%d %H:%M:%S')})"
                 
                 try:
-                    requests.post(DISCORD_WEBHOOK_URL, json={"content": alert_message})
+                    for webhook in accounts.all_user_webhooks():
+                        send_discord_message(webhook, alert_message)
                 except Exception as e:
                     print(f"디스코드 전송 에러: {e}")
                 
@@ -199,9 +216,10 @@ def motion_detection_worker():
 
 def generate_frames():
     global output_frame
-    while True:
+    while system_status["motion_detection"]:
         with frame_lock:
             if output_frame is None:
+                time.sleep(0.05)
                 continue
             success, encoded_image = cv2.imencode('.jpg', output_frame)
             if not success:
@@ -211,9 +229,9 @@ def generate_frames():
 
 @app.before_request
 def require_login():
-    if request.endpoint in ('login', 'static') or session.get('logged_in'):
+    if request.endpoint in ('login', 'register', 'static') or (session.get('logged_in') and session.get('user_id')):
         return
-    if request.method == 'POST' and request.is_json:
+    if request.path == "/toggle":
         return jsonify({"success": False, "message": "로그인이 필요합니다."}), 401
     return redirect(url_for('login'))
 
@@ -222,35 +240,61 @@ def login():
     error = None
     if request.method == 'POST':
         ip = get_client_ip()
-        count, last = login_failures.get(ip, (0, 0))
+        with login_lock:
+            count, last = login_failures.get(ip, (0, 0))
         if count >= MAX_FAILURES and time.time() - last < LOCKOUT_SECONDS:
             error = "시도 횟수 초과. 5분 뒤 다시 시도하세요."
-        elif hmac.compare_digest(request.form.get('password', ''), config.ADMIN_PASSWORD):
-            login_failures.pop(ip, None)
-            session.clear()
-            session['logged_in'] = True
-            session.permanent = True
-            return redirect(url_for('index'))
         else:
-            login_failures[ip] = (count + 1 if time.time() - last < LOCKOUT_SECONDS else 1, time.time())
+            user_id = accounts.authenticate(request.form.get('username', ''), request.form.get('password', ''))
+            if user_id:
+                with login_lock:
+                    login_failures.pop(ip, None)
+                session.clear()
+                session['logged_in'] = True
+                session['user_id'] = user_id
+                session['csrf_token'] = secrets.token_urlsafe(32)
+                session.permanent = True
+                return redirect(url_for('index'))
+            with login_lock:
+                login_failures[ip] = (count + 1 if time.time() - last < LOCKOUT_SECONDS else 1, time.time())
             error = "비밀번호가 올바르지 않습니다."
             threading.Thread(target=send_login_fail_alert, args=(ip,), daemon=True).start()
     return render_template('login.html', error=error)
 
-@app.route('/logout')
+@app.route('/register', methods=['GET', 'POST'])
+def register():
+    error = None
+    if request.method == 'POST':
+        try:
+            invite = os.getenv('ABOUTCAM_INVITE_CODE', '')
+            if not invite or not hmac.compare_digest(request.form.get('invite_code', ''), invite):
+                raise ValueError('초대 코드가 올바르지 않거나 회원가입이 비활성화되어 있습니다.')
+            user_id = accounts.create_user(request.form.get('username', ''), request.form.get('password', ''), request.form.get('webhook', '').strip())
+            session.clear()
+            session['logged_in'] = True
+            session['user_id'] = user_id
+            session['csrf_token'] = secrets.token_urlsafe(32)
+            session.permanent = True
+            threading.Thread(target=send_discord_message,
+                args=(accounts.user_webhook(user_id), '✅ AboutCam Discord 알림 연동이 완료되었습니다.'), daemon=True).start()
+            return redirect(url_for('index'))
+        except ValueError as exc:
+            error = str(exc)
+    return render_template('register.html', error=error)
+
+@app.route('/logout', methods=['POST'])
 def logout():
+    if not csrf_valid():
+        return jsonify({'success': False, 'message': 'CSRF 검증 실패'}), 403
     session.clear()
     return redirect(url_for('login'))
 
 def send_login_fail_alert(ip):
-    try:
-        requests.post(DISCORD_WEBHOOK_URL, json={"content": f"⚠️ **[로그인 실패]** IP `{ip}` 에서 잘못된 비밀번호 입력"}, timeout=5)
-    except Exception as e:
-        print(f"디스코드 전송 에러: {e}")
+    print(f'[로그인 실패] IP: {ip}')
 
 @app.route('/')
 def index():
-    return render_template('index.html', status=system_status)
+    return render_template('index.html', status=system_status, csrf_token=session['csrf_token'])
 
 @app.route('/video_feed')
 def video_feed():
@@ -259,7 +303,9 @@ def video_feed():
 @app.route('/toggle', methods=['POST'])
 def toggle_feature():
     global motion_thread, stop_event
-    data = request.json
+    if not csrf_valid():
+        return jsonify({'success': False, 'message': 'CSRF 검증 실패'}), 403
+    data = request.get_json(silent=True) or {}
     feature = data.get('feature')
     
     if feature == 'motion_detection':
@@ -282,7 +328,7 @@ def toggle_feature():
         if system_status["ip_monitoring"]:
             # 감시를 켠 본인 IP는 알림 없이 신뢰 목록에 등록
             with known_ips_lock:
-                known_ips.add(get_client_ip())
+                known_ips.add(f"{session['user_id']}|{get_client_ip()}")
                 save_known_ips()
         return jsonify({"success": True, "status": system_status["ip_monitoring"]})
     

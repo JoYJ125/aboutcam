@@ -78,7 +78,7 @@
 <body>
     <div class="card">
         <h1>🏠 홈 CCTV 보안 대시보드</h1>
-        <a href="/logout" style="color:#aaa;">로그아웃</a>
+        <form method="POST" action="/logout"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button type="submit" style="background:#555;">로그아웃</button></form>
         <p class="subtitle">스마트홈 관제 시스템 제어판</p>
 
         <!-- 실시간 웹캠 스트리밍 화면 -->
@@ -131,7 +131,7 @@
         function toggleFeature(featureName) {
             fetch('/toggle', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': '{{ csrf_token }}' },
                 body: JSON.stringify({ feature: featureName })
             })
             .then(response => response.json())

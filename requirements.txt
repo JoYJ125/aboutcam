@@ -1,0 +1,4 @@
+Flask>=3,<4
+requests>=2,<3
+opencv-python>=4.8,<5
+cryptography>=42,<47
