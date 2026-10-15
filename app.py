@@ -84,6 +84,8 @@ def send_denied_ip_alert(ip, user_agent, user_id):
 def enforce_ip_allowlist():
     if request.endpoint in ('login', 'register', 'static', 'approval_pending', 'logout') or not session.get('logged_in') or not session.get('user_id'):
         return
+    if request.endpoint in ("ip_management", "admin_transfer") and not accounts.is_admin(session['user_id']):
+        return "관리자만 접근할 수 있습니다.", 403
     ip = get_client_ip()
     try:
         ip_access.bootstrap(session['user_id'], ip)
@@ -96,7 +98,7 @@ def enforce_ip_allowlist():
         threading.Thread(target=send_denied_ip_alert,
             args=(ip, request.headers.get("User-Agent", "unknown"), session['user_id']),
             daemon=True).start()
-    if request.endpoint in ("video_feed", "toggle", "ip_management") or request.method != "GET":
+    if request.endpoint in ("video_feed", "toggle", "ip_management", "admin_transfer") or request.method != "GET":
         return "CCTV 접근 승인이 필요합니다.", 403
     return redirect(url_for("approval_pending"))
 
@@ -308,22 +310,47 @@ def send_login_fail_alert(ip):
 
 @app.route('/')
 def index():
-    return render_template('index.html', status=system_status, csrf_token=session['csrf_token'])
+    return render_template('index.html', status=system_status, csrf_token=session['csrf_token'], is_admin=accounts.is_admin(session['user_id']))
 
 @app.route('/ip-management', methods=['GET', 'POST'])
 def ip_management():
+    if not accounts.is_admin(session['user_id']):
+        return "관리자만 접근할 수 있습니다.", 403
     error = None
     if request.method == 'POST':
         if not csrf_valid():
             return "CSRF 검증 실패", 403
         try:
-            ip_access.change(session['user_id'], request.form.get('ip', ''),
+            target_id = int(request.form.get('user_id', ''))
+            ip_access.admin_change(session['user_id'], target_id, request.form.get('ip', ''),
                 request.form.get('name', ''), request.form.get('allowed') == '1', get_client_ip())
             return redirect(url_for('ip_management'))
-        except ValueError as exc:
-            error = str(exc)
-    return render_template('ip_management.html', entries=ip_access.list_ips(session['user_id']),
+        except (ValueError, PermissionError):
+            error = "변경 요청이 유효하지 않거나 현재 접속 IP는 차단할 수 없습니다."
+    return render_template('ip_management.html', entries=ip_access.list_all_ips(),
                            csrf_token=session['csrf_token'], current_ip=get_client_ip(), error=error)
+
+@app.route('/admin-transfer', methods=['GET', 'POST'])
+def admin_transfer():
+    if not accounts.is_admin(session['user_id']):
+        return "관리자만 접근할 수 있습니다.", 403
+    error = None
+    if request.method == 'POST':
+        if not csrf_valid():
+            return "CSRF 검증 실패", 403
+        if request.form.get('confirm') != 'TRANSFER':
+            error = "관리자 권한 양도를 확인해야 합니다."
+        else:
+            try:
+                accounts.transfer_admin(session['user_id'], request.form.get('password', ''),
+                                        request.form.get('username', ''))
+                session.clear()
+                return redirect(url_for('login'))
+            except ValueError as exc:
+                error = str(exc)
+    return render_template('admin_transfer.html', users=[
+        user for user in accounts.list_users() if user['id'] != session['user_id']
+    ], csrf_token=session['csrf_token'], error=error)
 
 @app.route('/video_feed')
 def video_feed():
