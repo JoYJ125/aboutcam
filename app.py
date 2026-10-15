@@ -207,7 +207,7 @@ def motion_detection_worker():
 
 def generate_frames():
     global output_frame
-    while True:
+    while system_status["motion_detection"]:
         with frame_lock:
             if output_frame is None:
                 time.sleep(0.05)
