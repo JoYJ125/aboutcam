@@ -321,6 +321,13 @@ def ip_management():
         if not csrf_valid():
             return "CSRF 검증 실패", 403
         try:
+            if request.form.get('action') == 'transfer':
+                if request.form.get('confirm') != 'TRANSFER':
+                    raise ValueError("확인 문구 TRANSFER를 입력하세요.")
+                accounts.transfer_admin(session['user_id'], request.form.get('password', ''),
+                                        request.form.get('username', ''))
+                session.clear()
+                return redirect(url_for('login'))
             target_id = int(request.form.get('user_id', ''))
             if request.form.get('action') == 'delete':
                 ip_access.admin_delete(session['user_id'], target_id,
@@ -332,8 +339,9 @@ def ip_management():
                 raise ValueError("알 수 없는 작업입니다.")
             return redirect(url_for('ip_management'))
         except (ValueError, PermissionError):
-            error = "변경·삭제 요청이 유효하지 않거나 현재 관리자 접속 IP는 변경할 수 없습니다."
+            error = "요청 실패: 대상 계정·IP·비밀번호·확인 문구를 확인하세요. 현재 관리자 접속 IP는 변경할 수 없습니다."
     return render_template('ip_management.html', entries=ip_access.list_all_ips(),
+                           users=[u for u in accounts.list_users() if u['id'] != session['user_id']],
                            csrf_token=session['csrf_token'], current_ip=get_client_ip(), error=error)
 
 @app.route('/admin-transfer', methods=['GET', 'POST'])
