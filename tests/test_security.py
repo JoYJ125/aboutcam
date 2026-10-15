@@ -56,6 +56,19 @@ class SecurityTests(unittest.TestCase):
             "csrf_token": token, "action": "authenticate",
             "admin_username": "ipowner", "admin_password": "separate-admin-password-123"})
 
+    def test_ip_entry_only_shows_login_and_setup_is_separate(self):
+        token=self.login()
+        page=self.client.get("/ip-management")
+        self.assertEqual(page.status_code,200)
+        self.assertIn('name="admin_username"'.encode(),page.data)
+        self.assertIn('name="admin_password"'.encode(),page.data)
+        self.assertNotIn('name="recovery_code"'.encode(),page.data)
+        self.assertNotIn('name="account_username"'.encode(),page.data)
+        self.assertEqual(self.client.post("/ip-management",data={"csrf_token":token,"action":"recover_admin"}).status_code,403)
+        self.assertEqual(self.client.get("/admin-credentials-setup").status_code,200)
+        self.assertIn('name="recovery_code"'.encode(),self.client.get("/admin-credentials-setup").data)
+        self.assertEqual(self.authorize(token).status_code,200)
+
     def test_independent_admin_password_and_recovery(self):
         token=self.login()
         self.assertEqual(self.client.get("/ip-management").status_code,200)
@@ -65,7 +78,7 @@ class SecurityTests(unittest.TestCase):
         changed=self.client.post("/admin-settings",data={"csrf_token":token,"action":"change_admin","admin_username":"ipowner","admin_password":"separate-admin-password-123","new_username":"newadmin","new_password":"new-separate-password-123"})
         self.assertEqual(changed.status_code,302)
         self.assertEqual(self.authorize(token).status_code,401)
-        recovered=self.client.post("/ip-management",data={"csrf_token":token,"action":"recover_admin","account_username":"test123","account_password":"strong-password-123","admin_username":"restored","admin_password":"restored-password-123456","recovery_code":os.environ["ABOUTCAM_ADMIN_RECOVERY_CODE"]})
+        recovered=self.client.post("/admin-credentials-setup",data={"csrf_token":token,"action":"recover_admin","account_username":"test123","account_password":"strong-password-123","admin_username":"restored","admin_password":"restored-password-123456","recovery_code":os.environ["ABOUTCAM_ADMIN_RECOVERY_CODE"]})
         self.assertEqual(recovered.status_code,302)
         self.assertTrue(app_module.admin_credentials.verify("restored","restored-password-123456"))
 
