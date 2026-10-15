@@ -48,6 +48,11 @@ class SecurityTests(unittest.TestCase):
         with self.client.session_transaction() as sess:
             return sess["csrf_token"]
 
+    def authorize(self, token):
+        return self.client.post("/ip-management", data={
+            "csrf_token": token, "action": "authenticate",
+            "admin_username": "test123", "admin_password": "strong-password-123"})
+
     def test_regular_user_cannot_manage_ips_or_transfer(self):
         viewer_id = app_module.accounts.create_user("viewer01", "viewer-password-123",
             "https://discord.com/api/webhooks/123456/token")
@@ -70,28 +75,30 @@ class SecurityTests(unittest.TestCase):
         self.assertTrue(app_module.accounts.is_admin(self.uid))
         bad = self.client.post("/admin-transfer", data={
             "csrf_token": token, "username": "newowner", "password": "wrong", "confirm": "TRANSFER"})
-        self.assertEqual(bad.status_code, 200)
+        self.assertEqual(bad.status_code, 403)
         self.assertTrue(app_module.accounts.is_admin(self.uid))
         good = self.client.post("/admin-transfer", data={
             "csrf_token": token, "username": "newowner", "password": "strong-password-123", "confirm": "TRANSFER"})
-        self.assertEqual(good.status_code, 302)
-        self.assertFalse(app_module.accounts.is_admin(self.uid))
-        self.assertTrue(app_module.accounts.is_admin(other))
+        self.assertEqual(good.status_code, 403)
+        self.assertTrue(app_module.accounts.is_admin(self.uid))
+        self.assertFalse(app_module.accounts.is_admin(other))
         self.login()
-        self.assertEqual(self.client.get("/ip-management").status_code, 403)
-        self.assertEqual(self.client.get("/admin-transfer").status_code, 403)
+        self.assertEqual(self.client.get("/ip-management").status_code, 200)
+        self.assertEqual(self.client.get("/admin-transfer").status_code, 302)
 
     def test_inline_owner_transfer_from_ip_management(self):
         new_id = app_module.accounts.create_user("nextmaster", "nextmaster-password-123",
             "https://discord.com/api/webhooks/123456/token")
         token = self.login()
         page = self.client.get("/ip-management")
-        self.assertIn("nextmaster".encode(), page.data)
+        self.assertIn("관리자 재인증".encode(), page.data)
+        self.assertEqual(self.authorize(token).status_code, 200)
         wrong = self.client.post("/ip-management", data={
             "csrf_token": token, "action": "transfer", "username": "nextmaster",
             "password": "wrong", "confirm": "TRANSFER"})
         self.assertEqual(wrong.status_code, 200)
         self.assertTrue(app_module.accounts.is_admin(self.uid))
+        self.authorize(token)
         done = self.client.post("/ip-management", data={
             "csrf_token": token, "action": "transfer", "username": "nextmaster",
             "password": "strong-password-123", "confirm": "TRANSFER"})
@@ -104,6 +111,7 @@ class SecurityTests(unittest.TestCase):
         self.client.get("/")
         remote = "198.51.100.15"
         self.client.get("/", environ_overrides={"REMOTE_ADDR": remote})
+        self.authorize(token)
         result = self.client.post("/ip-management", data={
             "csrf_token": token, "user_id": self.uid, "ip": remote,
             "action": "delete"})
@@ -116,6 +124,7 @@ class SecurityTests(unittest.TestCase):
     def test_admin_cannot_delete_current_ip(self):
         token = self.login()
         self.client.get("/")
+        self.authorize(token)
         result = self.client.post("/ip-management", data={
             "csrf_token": token, "user_id": self.uid, "ip": "127.0.0.1",
             "action": "delete"})
@@ -134,9 +143,11 @@ class SecurityTests(unittest.TestCase):
         self.assertEqual(len(entries), 1)
         self.assertEqual(entries[0]["name"], "관리자 로컬 PC")
         self.assertEqual(self.client.get("/ip-management").status_code, 200)
+        self.assertEqual(self.authorize(token).status_code, 200)
         self.assertEqual(self.client.post("/ip-management", data={"user_id": self.uid, "ip": "127.0.0.1", "name": "PC", "allowed": "0",
             "csrf_token": token}).status_code, 200)
         self.assertTrue(app_module.ip_access.list_ips(self.uid)[0]["allowed"])
+        self.authorize(token)
         self.assertEqual(self.client.post("/ip-management", data={"user_id": self.uid, "ip": "127.0.0.1", "name": "내 PC", "allowed": "1",
             "csrf_token": token}).status_code, 302)
         self.assertEqual(app_module.ip_access.list_ips(self.uid)[0]["name"], "내 PC")
@@ -179,9 +190,11 @@ class SecurityTests(unittest.TestCase):
         token = self.login()
         self.client.get("/")
         self.client.get("/", environ_overrides={"REMOTE_ADDR": "198.51.100.10"})
+        self.authorize(token)
         self.assertEqual(self.client.post("/ip-management", data={"user_id": self.uid, "ip": "198.51.100.10", "name": "휴대폰",
             "allowed": "1"}, headers={"X-CSRF-Token": token}).status_code, 302)
         self.assertEqual(self.client.get("/", environ_overrides={"REMOTE_ADDR": "198.51.100.10"}).status_code, 200)
+        self.authorize(token)
         self.assertEqual(self.client.post("/ip-management", data={"user_id": self.uid, "ip": "198.51.100.10", "name": "휴대폰",
             "allowed": "0", "csrf_token": token}).status_code, 302)
         self.assertEqual(self.client.get("/", environ_overrides={"REMOTE_ADDR": "198.51.100.10"}).status_code, 302)
