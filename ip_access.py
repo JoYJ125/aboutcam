@@ -3,6 +3,7 @@ import argparse
 import ipaddress
 import sqlite3
 import time
+import accounts
 from accounts import DB_PATH
 
 def normalize(ip):
@@ -33,7 +34,7 @@ def bootstrap(user_id, ip):
     server itself benefit. This prevents an accidental local admin lockout.
     """
     ip = normalize(ip)
-    if not ipaddress.ip_address(ip).is_loopback:
+    if not accounts.is_admin(user_id) or not ipaddress.ip_address(ip).is_loopback:
         return False
     with connect() as db:
         db.execute("""INSERT INTO allowed_ips(user_id,ip,name,allowed)
@@ -111,3 +112,27 @@ def cli():
 
 if __name__ == "__main__":
     cli()
+
+def list_all_ips():
+    with connect() as db:
+        return [dict(row) for row in db.execute("""
+            SELECT a.user_id, u.username, a.ip, a.name, a.allowed, a.last_seen
+            FROM allowed_ips a JOIN users u ON u.id=a.user_id
+            ORDER BY a.allowed ASC, u.username, a.ip
+        """)]
+
+def admin_change(actor_id, target_id, ip, name, allowed, current_ip):
+    if not accounts.is_admin(actor_id):
+        raise PermissionError("관리자만 IP를 변경할 수 있습니다.")
+    ip = normalize(ip)
+    name = name.strip()
+    if not name or len(name) > 60:
+        raise ValueError("IP 이름은 1~60자로 입력하세요.")
+    with connect() as db:
+        row = db.execute("SELECT allowed FROM allowed_ips WHERE user_id=? AND ip=?", (target_id, ip)).fetchone()
+        if row is None:
+            raise ValueError("등록된 IP가 아닙니다.")
+        if target_id == actor_id and ip == normalize(current_ip) and not allowed:
+            raise ValueError("현재 관리자 접속 IP는 차단할 수 없습니다.")
+        db.execute("UPDATE allowed_ips SET name=?,allowed=? WHERE user_id=? AND ip=?",
+                   (name, int(bool(allowed)), target_id, ip))
