@@ -6,15 +6,18 @@ import os
 import time
 import hmac
 import json
+import secrets
 from flask import Flask, render_template, request, jsonify, Response, session, redirect, url_for
 import config
 
 app = Flask(__name__, template_folder='.')
 app.secret_key = config.SECRET_KEY
+app.config['SESSION_COOKIE_SECURE'] = os.getenv('SESSION_COOKIE_SECURE', 'false').lower() == 'true'
 app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE='Lax',
                   PERMANENT_SESSION_LIFETIME=datetime.timedelta(days=7))
 
 login_failures = {}
+login_lock = threading.Lock()
 MAX_FAILURES = 5
 LOCKOUT_SECONDS = 300
 
@@ -59,11 +62,16 @@ def save_known_ips():
 def get_client_ip():
     """터널(Cloudflare 등)을 거치면 remote_addr가 루프백이므로 그때만 프록시 헤더를 신뢰"""
     remote = request.remote_addr
-    if remote in ("127.0.0.1", "::1"):
+    if remote in {x.strip() for x in os.getenv("TRUSTED_PROXIES", "").split(",") if x.strip()}:
         forwarded = request.headers.get("CF-Connecting-IP") or request.headers.get("X-Forwarded-For")
         if forwarded:
             return forwarded.split(",")[0].strip()
     return remote
+
+def csrf_valid():
+    expected = session.get('csrf_token', '')
+    received = request.headers.get('X-CSRF-Token', '') or request.form.get('csrf_token', '')
+    return bool(expected) and hmac.compare_digest(expected, received)
 
 def send_new_ip_alert(ip, user_agent):
     now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -75,7 +83,7 @@ def send_new_ip_alert(ip, user_agent):
 
 @app.before_request
 def check_new_ip():
-    if not system_status["ip_monitoring"]:
+    if not system_status["ip_monitoring"] or not session.get("logged_in"):
         return
     ip = get_client_ip()
     with known_ips_lock:
@@ -202,6 +210,7 @@ def generate_frames():
     while True:
         with frame_lock:
             if output_frame is None:
+                time.sleep(0.05)
                 continue
             success, encoded_image = cv2.imencode('.jpg', output_frame)
             if not success:
@@ -222,23 +231,29 @@ def login():
     error = None
     if request.method == 'POST':
         ip = get_client_ip()
-        count, last = login_failures.get(ip, (0, 0))
+        with login_lock:
+            count, last = login_failures.get(ip, (0, 0))
         if count >= MAX_FAILURES and time.time() - last < LOCKOUT_SECONDS:
             error = "시도 횟수 초과. 5분 뒤 다시 시도하세요."
         elif hmac.compare_digest(request.form.get('password', ''), config.ADMIN_PASSWORD):
-            login_failures.pop(ip, None)
+            with login_lock:
+                login_failures.pop(ip, None)
             session.clear()
             session['logged_in'] = True
+            session['csrf_token'] = secrets.token_urlsafe(32)
             session.permanent = True
             return redirect(url_for('index'))
         else:
-            login_failures[ip] = (count + 1 if time.time() - last < LOCKOUT_SECONDS else 1, time.time())
+            with login_lock:
+                login_failures[ip] = (count + 1 if time.time() - last < LOCKOUT_SECONDS else 1, time.time())
             error = "비밀번호가 올바르지 않습니다."
             threading.Thread(target=send_login_fail_alert, args=(ip,), daemon=True).start()
     return render_template('login.html', error=error)
 
-@app.route('/logout')
+@app.route('/logout', methods=['POST'])
 def logout():
+    if not csrf_valid():
+        return jsonify({'success': False, 'message': 'CSRF 검증 실패'}), 403
     session.clear()
     return redirect(url_for('login'))
 
@@ -250,7 +265,7 @@ def send_login_fail_alert(ip):
 
 @app.route('/')
 def index():
-    return render_template('index.html', status=system_status)
+    return render_template('index.html', status=system_status, csrf_token=session['csrf_token'])
 
 @app.route('/video_feed')
 def video_feed():
@@ -259,7 +274,9 @@ def video_feed():
 @app.route('/toggle', methods=['POST'])
 def toggle_feature():
     global motion_thread, stop_event
-    data = request.json
+    if not csrf_valid():
+        return jsonify({'success': False, 'message': 'CSRF 검증 실패'}), 403
+    data = request.get_json(silent=True) or {}
     feature = data.get('feature')
     
     if feature == 'motion_detection':
