@@ -86,7 +86,7 @@ def send_denied_ip_alert(ip, user_agent, user_id):
 def enforce_ip_allowlist():
     if request.endpoint in ('login', 'register', 'static', 'approval_pending', 'logout') or not session.get('logged_in') or not session.get('user_id'):
         return
-    if request.endpoint in ("ip_management", "admin_transfer") and not accounts.is_admin(session['user_id']):
+    if request.endpoint in ("ip_management", "admin_transfer", "admin_settings") and not accounts.is_admin(session['user_id']):
         return "관리자만 접근할 수 있습니다.", 403
     ip = get_client_ip()
     try:
@@ -100,7 +100,7 @@ def enforce_ip_allowlist():
         threading.Thread(target=send_denied_ip_alert,
             args=(ip, request.headers.get("User-Agent", "unknown"), session['user_id']),
             daemon=True).start()
-    if request.endpoint in ("video_feed", "toggle", "ip_management", "admin_transfer") or request.method != "GET":
+    if request.endpoint in ("video_feed", "toggle", "ip_management", "admin_transfer", "admin_settings") or request.method != "GET":
         return "CCTV 접근 승인이 필요합니다.", 403
     return redirect(url_for("approval_pending"))
 
@@ -389,20 +389,8 @@ def ip_management():
                 previous, stamp = admin_auth_failures.get(key,(0,0))
                 admin_auth_failures[key]=(previous+1 if now-stamp<LOCKOUT_SECONDS else 1,now)
             return admin_gate_form(str(exc), 400)
-    if request.form.get('action') in ('change_admin', 'delete_admin'):
-        if not csrf_valid():
-            return "CSRF 검증 실패", 403
-        if not admin_gate_valid():
-            return "관리자 재인증이 필요합니다.", 403
-        session.pop('admin_ip_grant', None)
-        try:
-            if request.form['action']=='change_admin':
-                admin_credentials.change(request.form.get('old_username',''),request.form.get('old_password',''),request.form.get('new_username',''),request.form.get('new_password',''))
-            else:
-                admin_credentials.delete(request.form.get('old_username',''),request.form.get('old_password',''),request.form.get('recovery_code',''))
-            return redirect(url_for('ip_management'))
-        except ValueError as exc:
-            return admin_gate_form(str(exc), 400)
+    if request.form.get("action") == "transfer":
+        return "관리자 권한 양도는 관리자 설정에서만 가능합니다.", 403
     if request.form.get('action') == 'authenticate':
         failure = admin_gate_login()
         if failure is not None:
@@ -415,13 +403,6 @@ def ip_management():
         session.pop('admin_ip_grant', None)
     if request.form.get('action') != 'authenticate':
         try:
-            if request.form.get('action') == 'transfer':
-                if request.form.get('confirm') != 'TRANSFER':
-                    raise ValueError("확인 문구 TRANSFER를 입력하세요.")
-                accounts.transfer_admin(session['user_id'], request.form.get('password', ''),
-                                        request.form.get('username', ''))
-                session.clear()
-                return redirect(url_for('login'))
             target_id = int(request.form.get('user_id', ''))
             if request.form.get('action') == 'delete':
                 ip_access.admin_delete(session['user_id'], target_id,
@@ -435,13 +416,60 @@ def ip_management():
         except (ValueError, PermissionError):
             error = "요청 실패: 대상 계정·IP·비밀번호·확인 문구를 확인하세요. 현재 관리자 접속 IP는 변경할 수 없습니다."
     return render_template('ip_management.html', entries=ip_access.list_all_ips(),
-                           users=[u for u in accounts.list_users() if u['id'] != session['user_id']],
                            csrf_token=session['csrf_token'], current_ip=get_client_ip(), error=error)
+
+@app.route('/admin-settings', methods=['GET', 'POST'])
+def admin_settings():
+    if not accounts.is_admin(session['user_id']):
+        return "관리자만 접근할 수 있습니다.", 403
+    if request.method == 'GET':
+        return render_template('admin_settings.html', csrf_token=session['csrf_token'],
+            users=[u for u in accounts.list_users() if u['id'] != session['user_id']], error=None)
+    if not csrf_valid():
+        return "CSRF 검증 실패", 403
+    ip = get_client_ip()
+    key = (session['user_id'], ip)
+    now = time.time()
+    with admin_auth_lock:
+        count, last = admin_auth_failures.get(key, (0, 0))
+        if count >= MAX_FAILURES and now - last < LOCKOUT_SECONDS:
+            return "인증 시도 횟수 초과. 5분 후 다시 시도하세요.", 429
+    # Require dedicated IP-management credentials for each sensitive action.
+    if not admin_credentials.verify(request.form.get('admin_username', ''), request.form.get('admin_password', '')):
+        with admin_auth_lock:
+            admin_auth_failures[key] = (count + 1 if now-last < LOCKOUT_SECONDS else 1, now)
+        return "IP 관리 전용 인증 정보가 올바르지 않습니다.", 401
+    with admin_auth_lock:
+        admin_auth_failures.pop(key, None)
+    try:
+        action = request.form.get('action')
+        if action == 'transfer':
+            if request.form.get('confirm') != 'TRANSFER':
+                raise ValueError("확인 문구 TRANSFER를 입력하세요.")
+            accounts.transfer_admin(session['user_id'], request.form.get('account_password', ''),
+                                    request.form.get('username', ''))
+            session.clear()
+            return redirect(url_for('login'))
+        if action == 'change_admin':
+            admin_credentials.change(request.form.get('admin_username',''),
+                request.form.get('admin_password',''), request.form.get('new_username',''),
+                request.form.get('new_password',''))
+        elif action == 'delete_admin':
+            admin_credentials.delete(request.form.get('admin_username',''),
+                request.form.get('admin_password',''), request.form.get('recovery_code',''))
+        else:
+            return "알 수 없는 작업입니다.", 400
+        session.pop('admin_ip_grant', None)
+        return redirect(url_for('admin_settings'))
+    except (ValueError, PermissionError) as exc:
+        return render_template('admin_settings.html', csrf_token=session['csrf_token'],
+            users=[u for u in accounts.list_users() if u['id'] != session['user_id']], error=str(exc)), 400
 
 @app.route('/admin-transfer', methods=['GET', 'POST'])
 def admin_transfer():
-    # The legacy route cannot bypass IP-management re-authentication.
-    return redirect(url_for('ip_management')) if request.method == 'GET' else ("관리자 재인증이 필요합니다.", 403)
+    if not accounts.is_admin(session['user_id']):
+        return "관리자만 접근할 수 있습니다.", 403
+    return redirect(url_for('admin_settings')) if request.method == 'GET' else ("관리자 설정에서 다시 인증하세요.", 403)
 
 @app.route('/video_feed')
 def video_feed():
