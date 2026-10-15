@@ -81,6 +81,29 @@ class SecurityTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("초대 코드".encode("utf-8"), response.data)
 
+    def test_registration_and_real_login(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(app_module.accounts, "DB_PATH", os.path.join(tmp, "users.db")):
+                app_module.accounts.init_db()
+                with patch.object(app_module.threading, "Thread"):
+                    response = self.client.post("/register", data={
+                        "username": "member01", "password": "strong-password-123",
+                        "invite_code": "test-invite",
+                        "webhook": "https://discord.com/api/webhooks/123456/token"
+                    })
+                self.assertEqual(response.status_code, 302)
+                with self.client.session_transaction() as sess:
+                    token = sess["csrf_token"]
+                self.assertEqual(self.client.post("/logout", data={"csrf_token": token}).status_code, 302)
+                response = self.client.post("/login", data={"username": "member01", "password": "strong-password-123"})
+                self.assertEqual(response.status_code, 302)
+                self.assertEqual(self.client.get("/").status_code, 200)
+
+    def test_invalid_webhook_rejected(self):
+        self.assertFalse(app_module.accounts.validate_webhook("http://discord.com/api/webhooks/1/secret"))
+        self.assertFalse(app_module.accounts.validate_webhook("https://discord.com.evil.test/api/webhooks/1/secret"))
+        self.assertTrue(app_module.accounts.validate_webhook("https://discord.com/api/webhooks/123/secret"))
+
     def test_untrusted_forwarded_header(self):
         with app_module.app.test_request_context("/", environ_base={"REMOTE_ADDR": "198.51.100.3"}, headers={"X-Forwarded-For": "203.0.113.9"}):
             with patch.dict(os.environ, {"TRUSTED_PROXIES": ""}):
