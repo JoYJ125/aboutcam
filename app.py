@@ -322,11 +322,17 @@ def ip_management():
             return "CSRF 검증 실패", 403
         try:
             target_id = int(request.form.get('user_id', ''))
-            ip_access.admin_change(session['user_id'], target_id, request.form.get('ip', ''),
-                request.form.get('name', ''), request.form.get('allowed') == '1', get_client_ip())
+            if request.form.get('action') == 'delete':
+                ip_access.admin_delete(session['user_id'], target_id,
+                    request.form.get('ip', ''), get_client_ip())
+            elif request.form.get('action') in ('', 'save', None):
+                ip_access.admin_change(session['user_id'], target_id, request.form.get('ip', ''),
+                    request.form.get('name', ''), request.form.get('allowed') == '1', get_client_ip())
+            else:
+                raise ValueError("알 수 없는 작업입니다.")
             return redirect(url_for('ip_management'))
         except (ValueError, PermissionError):
-            error = "변경 요청이 유효하지 않거나 현재 접속 IP는 차단할 수 없습니다."
+            error = "변경·삭제 요청이 유효하지 않거나 현재 관리자 접속 IP는 변경할 수 없습니다."
     return render_template('ip_management.html', entries=ip_access.list_all_ips(),
                            csrf_token=session['csrf_token'], current_ip=get_client_ip(), error=error)
 
