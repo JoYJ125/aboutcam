@@ -365,31 +365,7 @@ def ip_management():
         session.pop('admin_ip_grant', None)
         return admin_gate_form()
     if request.form.get('action') in ('provision_admin', 'recover_admin'):
-        if not csrf_valid():
-            return "CSRF 검증 실패", 403
-        # Both first-time setup and recovery require server-held recovery secret.
-        ip = get_client_ip()
-        key = (session['user_id'], ip)
-        now = time.time()
-        with admin_auth_lock:
-            count, last = admin_auth_failures.get(key, (0, 0))
-            if count >= MAX_FAILURES and now-last < LOCKOUT_SECONDS:
-                return admin_gate_form("시도 횟수를 초과했습니다. 5분 후 다시 시도하세요.", 429)
-        try:
-            if not accounts.authenticate(request.form.get('account_username',''), request.form.get('account_password','')) == session['user_id']:
-                raise ValueError("현재 로그인 계정의 비밀번호를 확인하세요.")
-            if request.form.get('action') == 'provision_admin' and admin_credentials.state() is not None:
-                raise ValueError("이미 설정되어 있습니다. 변경은 관리 화면에서 진행하세요.")
-            admin_credentials.provision(request.form.get('admin_username',''), request.form.get('admin_password',''), request.form.get('recovery_code',''))
-            session.pop('admin_ip_grant', None)
-            with admin_auth_lock:
-                admin_auth_failures.pop(key,None)
-            return redirect(url_for('ip_management'))
-        except ValueError as exc:
-            with admin_auth_lock:
-                previous, stamp = admin_auth_failures.get(key,(0,0))
-                admin_auth_failures[key]=(previous+1 if now-stamp<LOCKOUT_SECONDS else 1,now)
-            return admin_gate_form(str(exc), 400)
+        return "관리자 인증 정보 설정은 별도 설정 화면에서만 가능합니다.", 403
     if request.form.get("action") == "transfer":
         return "관리자 권한 양도는 관리자 설정에서만 가능합니다.", 403
     if request.form.get('action') == 'authenticate':
@@ -420,6 +396,41 @@ def ip_management():
             error = "요청 실패: 대상 계정·IP·비밀번호·확인 문구를 확인하세요. 현재 관리자 접속 IP는 변경할 수 없습니다."
     return render_template('ip_management.html', entries=ip_access.list_all_ips(),
                            csrf_token=session['csrf_token'], current_ip=get_client_ip(), error=error, notice=notice)
+
+@app.route('/admin-credentials-setup', methods=['GET', 'POST'])
+def admin_credentials_setup():
+    if not accounts.is_admin(session['user_id']):
+        return "관리자만 접근할 수 있습니다.", 403
+    if request.method == 'GET':
+        return render_template('admin_credentials_setup.html', csrf_token=session['csrf_token'],
+                               configured=admin_credentials.state() is not None, error=None)
+    if request.form.get('action') in ('provision_admin', 'recover_admin'):
+        if not csrf_valid():
+            return "CSRF 검증 실패", 403
+        # Both first-time setup and recovery require server-held recovery secret.
+        ip = get_client_ip()
+        key = (session['user_id'], ip)
+        now = time.time()
+        with admin_auth_lock:
+            count, last = admin_auth_failures.get(key, (0, 0))
+            if count >= MAX_FAILURES and now-last < LOCKOUT_SECONDS:
+                return render_template("admin_credentials_setup.html", csrf_token=session["csrf_token"], configured=admin_credentials.state() is not None, error="시도 횟수를 초과했습니다. 5분 후 다시 시도하세요."), 429
+        try:
+            if not accounts.authenticate(request.form.get('account_username',''), request.form.get('account_password','')) == session['user_id']:
+                raise ValueError("현재 로그인 계정의 비밀번호를 확인하세요.")
+            if request.form.get('action') == 'provision_admin' and admin_credentials.state() is not None:
+                raise ValueError("이미 설정되어 있습니다. 변경은 관리 화면에서 진행하세요.")
+            admin_credentials.provision(request.form.get('admin_username',''), request.form.get('admin_password',''), request.form.get('recovery_code',''))
+            session.pop('admin_ip_grant', None)
+            with admin_auth_lock:
+                admin_auth_failures.pop(key,None)
+            return redirect(url_for('admin_credentials_setup'))
+        except ValueError as exc:
+            with admin_auth_lock:
+                previous, stamp = admin_auth_failures.get(key,(0,0))
+                admin_auth_failures[key]=(previous+1 if now-stamp<LOCKOUT_SECONDS else 1,now)
+            return render_template("admin_credentials_setup.html", csrf_token=session["csrf_token"], configured=admin_credentials.state() is not None, error=str(exc)), 400
+    return "알 수 없는 작업입니다.", 400
 
 @app.route('/admin-settings', methods=['GET', 'POST'])
 def admin_settings():
