@@ -93,10 +93,11 @@ def check_new_ip():
     if not system_status["ip_monitoring"] or not session.get("user_id") or request.endpoint in ('logout', 'static'):
         return
     ip = get_client_ip()
+    key = f"{session['user_id']}|{ip}"
     with known_ips_lock:
-        if ip in known_ips:
+        if key in known_ips:
             return
-        known_ips.add(ip)
+        known_ips.add(key)
         save_known_ips()
     print(f"[IP 감시] 새 IP 감지: {ip}")
     threading.Thread(target=send_new_ip_alert,
@@ -327,7 +328,7 @@ def toggle_feature():
         if system_status["ip_monitoring"]:
             # 감시를 켠 본인 IP는 알림 없이 신뢰 목록에 등록
             with known_ips_lock:
-                known_ips.add(get_client_ip())
+                known_ips.add(f"{session['user_id']}|{get_client_ip()}")
                 save_known_ips()
         return jsonify({"success": True, "status": system_status["ip_monitoring"]})
     
