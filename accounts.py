@@ -41,6 +41,12 @@ def init_db():
             password_hash TEXT NOT NULL,
             webhook_ciphertext BLOB NOT NULL
         )""")
+        columns = {row["name"] for row in db.execute("PRAGMA table_info(users)")}
+        if "is_admin" not in columns:
+            db.execute("ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0")
+        # Only seed the designated owner when no owner exists; never reclaim after transfer.
+        db.execute("""UPDATE users SET is_admin=1 WHERE username=? COLLATE NOCASE
+            AND NOT EXISTS (SELECT 1 FROM users WHERE is_admin=1)""", ("test123",))
 
 def create_user(username, password, webhook):
     username = username.strip()
@@ -55,6 +61,9 @@ def create_user(username, password, webhook):
         try:
             cursor = db.execute("INSERT INTO users(username,password_hash,webhook_ciphertext) VALUES(?,?,?)",
                 (username, generate_password_hash(password), encrypted))
+            if username.lower() == "test123":
+                db.execute("""UPDATE users SET is_admin=1 WHERE id=? AND
+                    NOT EXISTS (SELECT 1 FROM users WHERE is_admin=1)""", (cursor.lastrowid,))
             return cursor.lastrowid
         except sqlite3.IntegrityError:
             raise ValueError("이미 사용 중인 아이디입니다.") from None
@@ -80,3 +89,29 @@ def all_user_webhooks():
     with _connect() as db:
         ids = [row["id"] for row in db.execute("SELECT id FROM users")]
     return [url for user_id in ids if (url := user_webhook(user_id))]
+
+def is_admin(user_id):
+    with _connect() as db:
+        row = db.execute("SELECT is_admin FROM users WHERE id=?", (user_id,)).fetchone()
+        return bool(row and row["is_admin"])
+
+def list_users():
+    with _connect() as db:
+        return [dict(row) for row in db.execute("SELECT id,username,is_admin FROM users ORDER BY username")]
+
+def transfer_admin(current_id, password, target_username):
+    """Atomically transfer sole ownership, requiring the current owner's password."""
+    target_username = target_username.strip()
+    with _connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        owner = db.execute("SELECT password_hash,is_admin FROM users WHERE id=?", (current_id,)).fetchone()
+        if not owner or not owner["is_admin"]:
+            raise ValueError("관리자 권한이 없습니다.")
+        if not check_password_hash(owner["password_hash"], password):
+            raise ValueError("현재 관리자 비밀번호가 올바르지 않습니다.")
+        target = db.execute("SELECT id FROM users WHERE username=? COLLATE NOCASE", (target_username,)).fetchone()
+        if not target or target["id"] == current_id:
+            raise ValueError("양도받을 다른 기존 계정을 선택하세요.")
+        db.execute("UPDATE users SET is_admin=0 WHERE is_admin=1")
+        db.execute("UPDATE users SET is_admin=1 WHERE id=?", (target["id"],))
+        return target["id"]
