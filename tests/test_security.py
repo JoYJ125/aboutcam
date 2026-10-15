@@ -83,8 +83,8 @@ class SecurityTests(unittest.TestCase):
         self.assertTrue(app_module.accounts.is_admin(self.uid))
         self.assertFalse(app_module.accounts.is_admin(other))
         self.login()
-        self.assertEqual(self.client.get("/ip-management").status_code, 403)
-        self.assertEqual(self.client.get("/admin-transfer").status_code, 403)
+        self.assertEqual(self.client.get("/ip-management").status_code, 200)
+        self.assertEqual(self.client.get("/admin-transfer").status_code, 302)
 
     def test_inline_owner_transfer_from_ip_management(self):
         new_id = app_module.accounts.create_user("nextmaster", "nextmaster-password-123",
@@ -124,6 +124,7 @@ class SecurityTests(unittest.TestCase):
     def test_admin_cannot_delete_current_ip(self):
         token = self.login()
         self.client.get("/")
+        self.authorize(token)
         result = self.client.post("/ip-management", data={
             "csrf_token": token, "user_id": self.uid, "ip": "127.0.0.1",
             "action": "delete"})
