@@ -3,6 +3,7 @@ import os
 import sys
 import tempfile
 import types
+from cryptography.fernet import Fernet
 import unittest
 from unittest.mock import patch
 
@@ -13,6 +14,9 @@ config.SECRET_KEY = "test-only-session-key"
 config.ADMIN_PASSWORD = "test-password"
 config.DISCORD_WEBHOOK_URL = "https://example.invalid/webhook"
 sys.modules["config"] = config
+os.environ["ABOUTCAM_FERNET_KEY"] = Fernet.generate_key().decode("ascii")
+os.environ["ABOUTCAM_INVITE_CODE"] = "test-invite"
+
 
 with tempfile.TemporaryDirectory() as work:
     old = os.getcwd()
@@ -32,7 +36,8 @@ class SecurityTests(unittest.TestCase):
         self.client = app_module.app.test_client()
 
     def login(self):
-        response = self.client.post("/login", data={"password": "test-password"})
+        with patch.object(app_module.accounts, "authenticate", return_value=1):
+            response = self.client.post("/login", data={"username": "tester", "password": "test-password"})
         self.assertEqual(response.status_code, 302)
         with self.client.session_transaction() as sess:
             return sess["csrf_token"]
@@ -44,9 +49,9 @@ class SecurityTests(unittest.TestCase):
     def test_login_failure_and_lockout(self):
         with patch.object(app_module.threading, "Thread") as thread:
             for _ in range(5):
-                r = self.client.post("/login", data={"password": "wrong"})
+                r = self.client.post("/login", data={"username": "tester", "password": "wrong"})
                 self.assertEqual(r.status_code, 200)
-            r = self.client.post("/login", data={"password": "test-password"})
+            r = self.client.post("/login", data={"username": "tester", "password": "test-password"})
             self.assertIn("시도 횟수 초과".encode("utf-8"), r.data)
         self.assertEqual(app_module.login_failures["127.0.0.1"][0], 5)
 
@@ -70,6 +75,11 @@ class SecurityTests(unittest.TestCase):
             self.client.get("/", environ_overrides={"REMOTE_ADDR": "198.51.100.2"})
             self.assertIn("198.51.100.2", app_module.known_ips)
             self.assertEqual(thread.call_count, 1)
+
+    def test_registration_requires_invite(self):
+        response = self.client.post("/register", data={"username": "tester", "password": "very-long-password", "invite_code": "wrong", "webhook": "https://discord.com/api/webhooks/123/secret"})
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("초대 코드".encode("utf-8"), response.data)
 
     def test_untrusted_forwarded_header(self):
         with app_module.app.test_request_context("/", environ_base={"REMOTE_ADDR": "198.51.100.3"}, headers={"X-Forwarded-For": "203.0.113.9"}):
