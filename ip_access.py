@@ -136,3 +136,17 @@ def admin_change(actor_id, target_id, ip, name, allowed, current_ip):
             raise ValueError("현재 관리자 접속 IP는 차단할 수 없습니다.")
         db.execute("UPDATE allowed_ips SET name=?,allowed=? WHERE user_id=? AND ip=?",
                    (name, int(bool(allowed)), target_id, ip))
+
+def admin_delete(actor_id, target_id, ip, current_ip):
+    """Remove an IP record; a later visit becomes a new pending request."""
+    if not accounts.is_admin(actor_id):
+        raise PermissionError("관리자만 IP 기록을 삭제할 수 있습니다.")
+    ip = normalize(ip)
+    with connect() as db:
+        row = db.execute("SELECT allowed FROM allowed_ips WHERE user_id=? AND ip=?",
+                         (target_id, ip)).fetchone()
+        if row is None:
+            raise ValueError("삭제할 IP 기록이 없습니다.")
+        if target_id == actor_id and ip == normalize(current_ip):
+            raise ValueError("현재 관리자 접속 IP는 삭제할 수 없습니다.")
+        db.execute("DELETE FROM allowed_ips WHERE user_id=? AND ip=?", (target_id, ip))

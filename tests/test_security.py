@@ -81,6 +81,30 @@ class SecurityTests(unittest.TestCase):
         self.assertEqual(self.client.get("/ip-management").status_code, 403)
         self.assertEqual(self.client.get("/admin-transfer").status_code, 403)
 
+    def test_admin_delete_ip_and_reapproval(self):
+        token = self.login()
+        self.client.get("/")
+        remote = "198.51.100.15"
+        self.client.get("/", environ_overrides={"REMOTE_ADDR": remote})
+        result = self.client.post("/ip-management", data={
+            "csrf_token": token, "user_id": self.uid, "ip": remote,
+            "action": "delete"})
+        self.assertEqual(result.status_code, 302)
+        self.assertFalse(any(x["ip"] == remote for x in app_module.ip_access.list_ips(self.uid)))
+        self.assertEqual(self.client.get("/", environ_overrides={"REMOTE_ADDR": remote}).status_code, 302)
+        self.assertTrue(any(x["ip"] == remote and not x["allowed"]
+                            for x in app_module.ip_access.list_ips(self.uid)))
+
+    def test_admin_cannot_delete_current_ip(self):
+        token = self.login()
+        self.client.get("/")
+        result = self.client.post("/ip-management", data={
+            "csrf_token": token, "user_id": self.uid, "ip": "127.0.0.1",
+            "action": "delete"})
+        self.assertEqual(result.status_code, 200)
+        self.assertTrue(any(x["ip"] == "127.0.0.1"
+                            for x in app_module.ip_access.list_ips(self.uid)))
+
     def test_login_required(self):
         self.assertEqual(self.client.get("/").status_code, 302)
         self.assertEqual(self.client.post("/toggle", json={"feature": "motion_detection"}).status_code, 401)
