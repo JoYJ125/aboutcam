@@ -10,10 +10,13 @@ import secrets
 from flask import Flask, render_template, request, jsonify, Response, session, redirect, url_for
 import config
 import accounts
+import ip_access
+from ipaddress import ip_address
 
 app = Flask(__name__, template_folder='.')
 app.secret_key = config.SECRET_KEY
 accounts.init_db()
+ip_access.init_db()
 app.config['SESSION_COOKIE_SECURE'] = os.getenv('SESSION_COOKIE_SECURE', 'false').lower() == 'true'
 app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE='Lax',
                   PERMANENT_SESSION_LIFETIME=datetime.timedelta(days=7))
@@ -45,22 +48,6 @@ RECORD_DIR = "recordings"
 if not os.path.exists(RECORD_DIR):
     os.makedirs(RECORD_DIR)
 
-KNOWN_IPS_FILE = "known_ips.json"
-known_ips_lock = threading.Lock()
-
-def load_known_ips():
-    try:
-        with open(KNOWN_IPS_FILE, "r", encoding="utf-8") as f:
-            return set(json.load(f))
-    except (FileNotFoundError, ValueError):
-        return set()
-
-known_ips = load_known_ips()
-
-def save_known_ips():
-    with open(KNOWN_IPS_FILE, "w", encoding="utf-8") as f:
-        json.dump(sorted(known_ips), f)
-
 def get_client_ip():
     """터널(Cloudflare 등)을 거치면 remote_addr가 루프백이므로 그때만 프록시 헤더를 신뢰"""
     remote = request.remote_addr or 'unknown'
@@ -88,21 +75,28 @@ def send_new_ip_alert(ip, user_agent, user_id):
     message = f"🆕 **[새 IP 접속]** 처음 보는 IP가 접속했습니다.\nIP: `{ip}`\n시간: {now}\n기기: {user_agent[:100]}"
     send_discord_message(accounts.user_webhook(user_id), message)
 
+def send_denied_ip_alert(ip, user_agent, user_id):
+    now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    message = f"⛔ **[미허가 IP 차단]**\nIP: `{ip}`\n시간: {now}\n기기: {user_agent[:100]}"
+    send_discord_message(accounts.user_webhook(user_id), message)
+
 @app.before_request
-def check_new_ip():
-    if not system_status["ip_monitoring"] or not session.get("user_id") or request.endpoint in ('logout', 'static'):
+def enforce_ip_allowlist():
+    if request.endpoint in ('login', 'register', 'static') or not session.get('logged_in') or not session.get('user_id'):
         return
     ip = get_client_ip()
-    key = f"{session['user_id']}|{ip}"
-    with known_ips_lock:
-        if key in known_ips:
-            return
-        known_ips.add(key)
-        save_known_ips()
-    print(f"[IP 감시] 새 IP 감지: {ip}")
-    threading.Thread(target=send_new_ip_alert,
-                     args=(ip, request.headers.get("User-Agent", "unknown"), session["user_id"]),
-                     daemon=True).start()
+    try:
+        ip_access.bootstrap(session['user_id'], ip)
+        allowed, alert = ip_access.check(session['user_id'], ip)
+    except ValueError:
+        return "유효하지 않은 접속 IP입니다.", 403
+    if allowed:
+        return
+    if alert:
+        threading.Thread(target=send_denied_ip_alert,
+            args=(ip, request.headers.get("User-Agent", "unknown"), session['user_id']),
+            daemon=True).start()
+    return "허가되지 않은 IP입니다. 관리자에게 IP 등록을 요청하세요.", 403
 
 def motion_detection_worker():
     """웹 대시보드와 연동된 백그라운드 모션 감지, 스트리밍, 30초 알림(텍스트만) 및 5분 고정 자동 녹화 함수"""
@@ -296,6 +290,21 @@ def send_login_fail_alert(ip):
 def index():
     return render_template('index.html', status=system_status, csrf_token=session['csrf_token'])
 
+@app.route('/ip-management', methods=['GET', 'POST'])
+def ip_management():
+    error = None
+    if request.method == 'POST':
+        if not csrf_valid():
+            return "CSRF 검증 실패", 403
+        try:
+            ip_access.change(session['user_id'], request.form.get('ip', ''),
+                request.form.get('name', ''), request.form.get('allowed') == '1', get_client_ip())
+            return redirect(url_for('ip_management'))
+        except ValueError as exc:
+            error = str(exc)
+    return render_template('ip_management.html', entries=ip_access.list_ips(session['user_id']),
+                           csrf_token=session['csrf_token'], current_ip=get_client_ip(), error=error)
+
 @app.route('/video_feed')
 def video_feed():
     return Response(generate_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
@@ -324,13 +333,7 @@ def toggle_feature():
         return jsonify({"success": True, "status": system_status["motion_detection"]})
         
     elif feature == 'ip_monitoring':
-        system_status["ip_monitoring"] = not system_status["ip_monitoring"]
-        if system_status["ip_monitoring"]:
-            # 감시를 켠 본인 IP는 알림 없이 신뢰 목록에 등록
-            with known_ips_lock:
-                known_ips.add(f"{session['user_id']}|{get_client_ip()}")
-                save_known_ips()
-        return jsonify({"success": True, "status": system_status["ip_monitoring"]})
+        return jsonify({'success': False, 'message': 'IP 접근 차단은 보안을 위해 항상 활성화됩니다.'}), 403
     
     return jsonify({"success": False, "message": "잘못된 요청입니다."}), 400
 

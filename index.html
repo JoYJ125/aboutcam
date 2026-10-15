@@ -106,25 +106,7 @@
             </div>
         </div>
 
-        <!-- IP 관제 제어 박스 -->
-        <div class="status-box">
-            <div class="status-row">
-                <div>
-                    <strong>신규 IP 관제</strong><br>
-                    <span style="font-size: 13px; color: #666;">네트워크 미인가 접속 탐지 및 차단</span>
-                </div>
-                <div>
-                    <span id="ip-badge" class="badge {% if status.ip_monitoring %}on{% else %}off{% endif %}">
-                        {% if status.ip_monitoring %}작동 중 (ON){% else %}정지 (OFF){% endif %}
-                    </span>
-                </div>
-            </div>
-            <div style="margin-top: 15px; text-align: right;">
-                <button id="ip-btn" class="{% if status.ip_monitoring %}btn-off{% else %}btn-on{% endif %}" onclick="toggleFeature('ip_monitoring')">
-                    {% if status.ip_monitoring %}IP 관제 중지{% else %}IP 관제 시작{% endif %}
-                </button>
-            </div>
-        </div>
+        <div class="status-box"><strong>IP 접근 보호: 항상 활성화</strong><p style="font-size:13px;color:#666;">허가되지 않은 IP는 차단되고 Discord 알림이 발송됩니다.</p><a href="/ip-management">허가 IP 목록 · 이름 및 접근 권한 관리 →</a></div>
     </div>
 
     <script>
