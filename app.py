@@ -389,6 +389,8 @@ def ip_management():
                 previous, stamp = admin_auth_failures.get(key,(0,0))
                 admin_auth_failures[key]=(previous+1 if now-stamp<LOCKOUT_SECONDS else 1,now)
             return admin_gate_form(str(exc), 400)
+    if request.form.get("action") == "transfer":
+        return "관리자 권한 양도는 관리자 설정에서만 가능합니다.", 403
     if request.form.get('action') == 'authenticate':
         failure = admin_gate_login()
         if failure is not None:
