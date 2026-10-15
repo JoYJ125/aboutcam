@@ -27,12 +27,12 @@ def init_db():
         )""")
 
 def bootstrap(user_id, ip):
-    """Only automatically trust loopback, and only for an account with no IP records."""
+    """Only automatically trust loopback if the account has no approved IP yet."""
     ip = normalize(ip)
     if not ipaddress.ip_address(ip).is_loopback:
         return False
     with connect() as db:
-        existing = db.execute("SELECT 1 FROM allowed_ips WHERE user_id=? LIMIT 1", (user_id,)).fetchone()
+        existing = db.execute("SELECT 1 FROM allowed_ips WHERE user_id=? AND allowed=1 LIMIT 1", (user_id,)).fetchone()
         if existing:
             return False
         db.execute("INSERT OR IGNORE INTO allowed_ips(user_id,ip,name,allowed) VALUES(?,?,?,1)",
