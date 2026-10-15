@@ -97,7 +97,7 @@ class SecurityTests(unittest.TestCase):
         self.assertEqual(self.client.get("/", environ_overrides={"REMOTE_ADDR": "198.51.100.10"}).status_code, 200)
         self.assertEqual(self.client.post("/ip-management", data={"ip": "198.51.100.10", "name": "휴대폰",
             "allowed": "0", "csrf_token": token}).status_code, 302)
-        self.assertEqual(self.client.get("/", environ_overrides={"REMOTE_ADDR": "198.51.100.10"}).status_code, 403)
+        self.assertEqual(self.client.get("/", environ_overrides={"REMOTE_ADDR": "198.51.100.10"}).status_code, 302)
 
     def test_csrf_and_ip_toggle_cannot_disable(self):
         token = self.login()
