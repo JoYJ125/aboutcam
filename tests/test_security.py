@@ -73,7 +73,7 @@ class SecurityTests(unittest.TestCase):
             self.login()
             self.client.get("/", environ_overrides={"REMOTE_ADDR": "198.51.100.2"})
             self.client.get("/", environ_overrides={"REMOTE_ADDR": "198.51.100.2"})
-            self.assertIn("198.51.100.2", app_module.known_ips)
+            self.assertIn("1|198.51.100.2", app_module.known_ips)
             self.assertEqual(thread.call_count, 1)
 
     def test_registration_requires_invite(self):
