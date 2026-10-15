@@ -30,7 +30,6 @@ class SecurityTests(unittest.TestCase):
     def setUp(self):
         app_module.app.config["TESTING"] = True
         app_module.login_failures.clear()
-        app_module.known_ips.clear()
         app_module.system_status["ip_monitoring"] = True
         app_module.system_status["motion_detection"] = False
         self.client = app_module.app.test_client()
@@ -60,21 +59,22 @@ class SecurityTests(unittest.TestCase):
         self.assertEqual(self.client.post("/toggle", json={"feature": "ip_monitoring"}).status_code, 403)
         self.assertEqual(self.client.post("/toggle", json={"feature": "ip_monitoring"}, headers={"X-CSRF-Token": "wrong"}).status_code, 403)
         ok = self.client.post("/toggle", json={"feature": "ip_monitoring"}, headers={"X-CSRF-Token": token})
-        self.assertEqual(ok.status_code, 200)
-        self.assertFalse(ok.json["status"])
+        self.assertEqual(ok.status_code, 403)
         self.assertEqual(self.client.post("/logout").status_code, 403)
         self.assertEqual(self.client.post("/logout", data={"csrf_token": token}).status_code, 302)
         self.assertEqual(self.client.get("/").status_code, 302)
 
     def test_ip_monitoring_authenticated_only(self):
-        with patch.object(app_module.threading, "Thread") as thread, patch.object(app_module, "save_known_ips"):
-            self.client.get("/", environ_overrides={"REMOTE_ADDR": "198.51.100.2"})
-            self.assertEqual(len(app_module.known_ips), 0)
+        with tempfile.TemporaryDirectory() as tmp, patch.object(app_module.ip_access, "DB_PATH", os.path.join(tmp, "ips.db")):
+            app_module.ip_access.init_db()
             self.login()
-            self.client.get("/", environ_overrides={"REMOTE_ADDR": "198.51.100.2"})
-            self.client.get("/", environ_overrides={"REMOTE_ADDR": "198.51.100.2"})
-            self.assertIn("1|198.51.100.2", app_module.known_ips)
-            self.assertEqual(thread.call_count, 1)
+            with patch.object(app_module.threading, "Thread") as thread:
+                r = self.client.get("/", environ_overrides={"REMOTE_ADDR": "198.51.100.2"})
+                self.assertEqual(r.status_code, 403)
+                self.assertEqual(thread.call_count, 1)
+                r = self.client.get("/", environ_overrides={"REMOTE_ADDR": "198.51.100.2"})
+                self.assertEqual(r.status_code, 403)
+                self.assertEqual(thread.call_count, 1)
 
     def test_registration_requires_invite(self):
         response = self.client.post("/register", data={"username": "tester", "password": "very-long-password", "invite_code": "wrong", "webhook": "https://discord.com/api/webhooks/123/secret"})
