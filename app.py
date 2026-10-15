@@ -82,7 +82,7 @@ def send_denied_ip_alert(ip, user_agent, user_id):
 
 @app.before_request
 def enforce_ip_allowlist():
-    if request.endpoint in ('login', 'register', 'static') or not session.get('logged_in') or not session.get('user_id'):
+    if request.endpoint in ('login', 'register', 'static', 'approval_pending', 'logout') or not session.get('logged_in') or not session.get('user_id'):
         return
     ip = get_client_ip()
     try:
@@ -96,7 +96,9 @@ def enforce_ip_allowlist():
         threading.Thread(target=send_denied_ip_alert,
             args=(ip, request.headers.get("User-Agent", "unknown"), session['user_id']),
             daemon=True).start()
-    return "허가되지 않은 IP입니다. 관리자에게 IP 등록을 요청하세요.", 403
+    if request.endpoint in ("video_feed", "toggle", "ip_management") or request.method != "GET":
+        return "CCTV 접근 승인이 필요합니다.", 403
+    return redirect(url_for("approval_pending"))
 
 def motion_detection_worker():
     """웹 대시보드와 연동된 백그라운드 모션 감지, 스트리밍, 30초 알림(텍스트만) 및 5분 고정 자동 녹화 함수"""
@@ -228,6 +230,24 @@ def require_login():
     if request.path == "/toggle":
         return jsonify({"success": False, "message": "로그인이 필요합니다."}), 401
     return redirect(url_for('login'))
+
+@app.route('/approval-pending')
+def approval_pending():
+    if not session.get('logged_in') or not session.get('user_id'):
+        return redirect(url_for('login'))
+    try:
+        ip = get_client_ip()
+        ip_access.bootstrap(session['user_id'], ip)
+        allowed, alert = ip_access.check(session['user_id'], ip)
+    except ValueError:
+        return "유효하지 않은 IP입니다.", 403
+    if allowed:
+        return redirect(url_for('index'))
+    if alert:
+        threading.Thread(target=send_denied_ip_alert,
+            args=(ip, request.headers.get("User-Agent", "unknown"), session["user_id"]),
+            daemon=True).start()
+    return render_template('approval_pending.html', ip=ip, csrf_token=session['csrf_token'])
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
