@@ -312,14 +312,64 @@ def send_login_fail_alert(ip):
 def index():
     return render_template('index.html', status=system_status, csrf_token=session['csrf_token'], is_admin=accounts.is_admin(session['user_id']))
 
+# Re-authenticate before every management page visit; POSTs require a short-lived grant.
+admin_auth_failures = {}
+admin_auth_lock = threading.Lock()
+ADMIN_AUTH_TTL = 180
+
+def admin_gate_valid():
+    grant = session.get('admin_ip_grant') or {}
+    return (grant.get('user_id') == session.get('user_id') and
+            grant.get('ip') == get_client_ip() and
+            0 <= time.time() - grant.get('issued', 0) <= ADMIN_AUTH_TTL and
+            accounts.is_admin(session.get('user_id')))
+
+def admin_gate_form(error=None, status=200):
+    return render_template('admin_ip_auth.html', csrf_token=session['csrf_token'], error=error), status
+
+def admin_gate_login():
+    if not csrf_valid():
+        return "CSRF 검증 실패", 403
+    ip = get_client_ip()
+    key = (session['user_id'], ip)
+    now = time.time()
+    with admin_auth_lock:
+        count, last = admin_auth_failures.get(key, (0, 0))
+        if now - last >= LOCKOUT_SECONDS:
+            count = 0
+        if count >= MAX_FAILURES:
+            return admin_gate_form("인증 시도 횟수를 초과했습니다. 5분 후 다시 시도하세요.", 429)
+    username = request.form.get('admin_username', '').strip()
+    password = request.form.get('admin_password', '')
+    verified = accounts.authenticate(username, password)
+    if verified != session['user_id'] or not accounts.is_admin(verified):
+        with admin_auth_lock:
+            admin_auth_failures[key] = (count + 1, now)
+        return admin_gate_form("관리자 아이디 또는 비밀번호가 올바르지 않습니다.", 401)
+    with admin_auth_lock:
+        admin_auth_failures.pop(key, None)
+    session['admin_ip_grant'] = {'user_id': verified, 'ip': ip, 'issued': now}
+    return None
+
 @app.route('/ip-management', methods=['GET', 'POST'])
 def ip_management():
     if not accounts.is_admin(session['user_id']):
         return "관리자만 접근할 수 있습니다.", 403
     error = None
-    if request.method == 'POST':
+    if request.method == 'GET':
+        session.pop('admin_ip_grant', None)
+        return admin_gate_form()
+    if request.form.get('action') == 'authenticate':
+        failure = admin_gate_login()
+        if failure is not None:
+            return failure
+    else:
         if not csrf_valid():
             return "CSRF 검증 실패", 403
+        if not admin_gate_valid():
+            return "관리자 재인증이 필요합니다.", 403
+        session.pop('admin_ip_grant', None)
+    if request.form.get('action') != 'authenticate':
         try:
             if request.form.get('action') == 'transfer':
                 if request.form.get('confirm') != 'TRANSFER':
@@ -346,25 +396,8 @@ def ip_management():
 
 @app.route('/admin-transfer', methods=['GET', 'POST'])
 def admin_transfer():
-    if not accounts.is_admin(session['user_id']):
-        return "관리자만 접근할 수 있습니다.", 403
-    error = None
-    if request.method == 'POST':
-        if not csrf_valid():
-            return "CSRF 검증 실패", 403
-        if request.form.get('confirm') != 'TRANSFER':
-            error = "관리자 권한 양도를 확인해야 합니다."
-        else:
-            try:
-                accounts.transfer_admin(session['user_id'], request.form.get('password', ''),
-                                        request.form.get('username', ''))
-                session.clear()
-                return redirect(url_for('login'))
-            except ValueError as exc:
-                error = str(exc)
-    return render_template('admin_transfer.html', users=[
-        user for user in accounts.list_users() if user['id'] != session['user_id']
-    ], csrf_token=session['csrf_token'], error=error)
+    # The legacy route cannot bypass IP-management re-authentication.
+    return redirect(url_for('ip_management')) if request.method == 'GET' else ("관리자 재인증이 필요합니다.", 403)
 
 @app.route('/video_feed')
 def video_feed():
