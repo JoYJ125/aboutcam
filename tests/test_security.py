@@ -77,6 +77,18 @@ class SecurityTests(unittest.TestCase):
         self.assertEqual(rows[0]["ip"], "198.51.100.10")
         self.assertFalse(rows[0]["allowed"])
 
+    def test_localhost_recovers_after_other_ip_is_approved(self):
+        self.login()
+        self.client.get("/", environ_overrides={"REMOTE_ADDR": "127.0.0.1"})
+        import ip_access
+        with ip_access.connect() as db:
+            db.execute("UPDATE allowed_ips SET allowed=0 WHERE ip='127.0.0.1'")
+            db.execute("INSERT OR REPLACE INTO allowed_ips(user_id,ip,name,allowed) VALUES(?,?,?,1)",
+                       (self.uid, "192.0.2.15", "다른 기기"))
+        self.assertEqual(self.client.get("/", environ_overrides={"REMOTE_ADDR": "127.0.0.1"}).status_code, 200)
+        self.assertTrue(any(x["ip"] == "127.0.0.1" and x["allowed"]
+                            for x in ip_access.list_ips(self.uid)))
+
     def test_unapproved_user_sees_waiting_page_not_camera(self):
         self.login()
         with patch.object(app_module.threading, "Thread"):
