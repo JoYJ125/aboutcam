@@ -39,7 +39,7 @@ def bootstrap(user_id, ip):
         db.execute("""INSERT INTO allowed_ips(user_id,ip,name,allowed)
             VALUES(?,?,?,1)
             ON CONFLICT(user_id,ip) DO UPDATE SET allowed=1""",
-            (user_id, ip, "메인 컴퓨터 (로컬)"))
+            (user_id, ip, "관리자 로컬 PC"))
     return True
 
 def check(user_id, ip):
