@@ -61,7 +61,7 @@ def save_known_ips():
 
 def get_client_ip():
     """터널(Cloudflare 등)을 거치면 remote_addr가 루프백이므로 그때만 프록시 헤더를 신뢰"""
-    remote = request.remote_addr
+    remote = request.remote_addr or 'unknown'
     if remote in {x.strip() for x in os.getenv("TRUSTED_PROXIES", "").split(",") if x.strip()}:
         forwarded = request.headers.get("CF-Connecting-IP") or request.headers.get("X-Forwarded-For")
         if forwarded:
@@ -83,7 +83,7 @@ def send_new_ip_alert(ip, user_agent):
 
 @app.before_request
 def check_new_ip():
-    if not system_status["ip_monitoring"] or not session.get("logged_in"):
+    if not system_status["ip_monitoring"] or not session.get("logged_in") or request.endpoint in ('logout', 'static'):
         return
     ip = get_client_ip()
     with known_ips_lock:
@@ -222,7 +222,7 @@ def generate_frames():
 def require_login():
     if request.endpoint in ('login', 'static') or session.get('logged_in'):
         return
-    if request.method == 'POST' and request.is_json:
+    if request.path == "/toggle":
         return jsonify({"success": False, "message": "로그인이 필요합니다."}), 401
     return redirect(url_for('login'))
 
