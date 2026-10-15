@@ -360,6 +360,7 @@ def ip_management():
     if not accounts.is_admin(session['user_id']):
         return "관리자만 접근할 수 있습니다.", 403
     error = None
+    notice = None
     if request.method == 'GET':
         session.pop('admin_ip_grant', None)
         return admin_gate_form()
@@ -400,23 +401,25 @@ def ip_management():
             return "CSRF 검증 실패", 403
         if not admin_gate_valid():
             return "관리자 재인증이 필요합니다.", 403
-        session.pop('admin_ip_grant', None)
+        # Keep the short-lived, IP-bound grant for consecutive IP actions.
     if request.form.get('action') != 'authenticate':
         try:
             target_id = int(request.form.get('user_id', ''))
             if request.form.get('action') == 'delete':
                 ip_access.admin_delete(session['user_id'], target_id,
                     request.form.get('ip', ''), get_client_ip())
-            elif request.form.get('action') in ('', 'save', None):
+            elif request.form.get('action') in ('', 'save', 'allow', 'block', None):
+                action = request.form.get('action')
+                allowed = True if action == 'allow' else False if action == 'block' else request.form.get('allowed') == '1'
                 ip_access.admin_change(session['user_id'], target_id, request.form.get('ip', ''),
-                    request.form.get('name', ''), request.form.get('allowed') == '1', get_client_ip())
+                    request.form.get('name', '').strip() or '등록된 기기', allowed, get_client_ip())
             else:
                 raise ValueError("알 수 없는 작업입니다.")
-            return redirect(url_for('ip_management'))
+            notice = 'IP 접근 설정이 반영되었습니다.'
         except (ValueError, PermissionError):
             error = "요청 실패: 대상 계정·IP·비밀번호·확인 문구를 확인하세요. 현재 관리자 접속 IP는 변경할 수 없습니다."
     return render_template('ip_management.html', entries=ip_access.list_all_ips(),
-                           csrf_token=session['csrf_token'], current_ip=get_client_ip(), error=error)
+                           csrf_token=session['csrf_token'], current_ip=get_client_ip(), error=error, notice=notice)
 
 @app.route('/admin-settings', methods=['GET', 'POST'])
 def admin_settings():
