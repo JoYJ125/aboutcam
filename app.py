@@ -10,12 +10,14 @@ import secrets
 from flask import Flask, render_template, request, jsonify, Response, session, redirect, url_for
 import config
 import accounts
+import admin_credentials
 import ip_access
 from ipaddress import ip_address
 
 app = Flask(__name__, template_folder='.')
 app.secret_key = config.SECRET_KEY
 accounts.init_db()
+admin_credentials.init_db()
 ip_access.init_db()
 app.config['SESSION_COOKIE_SECURE'] = os.getenv('SESSION_COOKIE_SECURE', 'false').lower() == 'true'
 app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE='Lax',
@@ -322,10 +324,12 @@ def admin_gate_valid():
     return (grant.get('user_id') == session.get('user_id') and
             grant.get('ip') == get_client_ip() and
             0 <= time.time() - grant.get('issued', 0) <= ADMIN_AUTH_TTL and
-            accounts.is_admin(session.get('user_id')))
+            accounts.is_admin(session.get('user_id')) and
+            admin_credentials.state() is not None and
+            grant.get('version') == admin_credentials.state()['version'])
 
 def admin_gate_form(error=None, status=200):
-    return render_template('admin_ip_auth.html', csrf_token=session['csrf_token'], error=error), status
+    return render_template('admin_ip_auth.html', csrf_token=session['csrf_token'], error=error, configured=admin_credentials.state() is not None), status
 
 def admin_gate_login():
     if not csrf_valid():
@@ -341,14 +345,14 @@ def admin_gate_login():
             return admin_gate_form("인증 시도 횟수를 초과했습니다. 5분 후 다시 시도하세요.", 429)
     username = request.form.get('admin_username', '').strip()
     password = request.form.get('admin_password', '')
-    verified = accounts.authenticate(username, password)
-    if verified != session['user_id'] or not accounts.is_admin(verified):
+    verified = admin_credentials.verify(username, password)
+    if not verified:
         with admin_auth_lock:
             admin_auth_failures[key] = (count + 1, now)
         return admin_gate_form("관리자 아이디 또는 비밀번호가 올바르지 않습니다.", 401)
     with admin_auth_lock:
         admin_auth_failures.pop(key, None)
-    session['admin_ip_grant'] = {'user_id': verified, 'ip': ip, 'issued': now}
+    session['admin_ip_grant'] = {'user_id': session['user_id'], 'ip': ip, 'issued': now, 'version': admin_credentials.state()['version']}
     return None
 
 @app.route('/ip-management', methods=['GET', 'POST'])
@@ -359,6 +363,46 @@ def ip_management():
     if request.method == 'GET':
         session.pop('admin_ip_grant', None)
         return admin_gate_form()
+    if request.form.get('action') in ('provision_admin', 'recover_admin'):
+        if not csrf_valid():
+            return "CSRF 검증 실패", 403
+        # Both first-time setup and recovery require server-held recovery secret.
+        ip = get_client_ip()
+        key = (session['user_id'], ip)
+        now = time.time()
+        with admin_auth_lock:
+            count, last = admin_auth_failures.get(key, (0, 0))
+            if count >= MAX_FAILURES and now-last < LOCKOUT_SECONDS:
+                return admin_gate_form("시도 횟수를 초과했습니다. 5분 후 다시 시도하세요.", 429)
+        try:
+            if not accounts.authenticate(request.form.get('account_username',''), request.form.get('account_password','')) == session['user_id']:
+                raise ValueError("현재 로그인 계정의 비밀번호를 확인하세요.")
+            if request.form.get('action') == 'provision_admin' and admin_credentials.state() is not None:
+                raise ValueError("이미 설정되어 있습니다. 변경은 관리 화면에서 진행하세요.")
+            admin_credentials.provision(request.form.get('admin_username',''), request.form.get('admin_password',''), request.form.get('recovery_code',''))
+            session.pop('admin_ip_grant', None)
+            with admin_auth_lock:
+                admin_auth_failures.pop(key,None)
+            return redirect(url_for('ip_management'))
+        except ValueError as exc:
+            with admin_auth_lock:
+                previous, stamp = admin_auth_failures.get(key,(0,0))
+                admin_auth_failures[key]=(previous+1 if now-stamp<LOCKOUT_SECONDS else 1,now)
+            return admin_gate_form(str(exc), 400)
+    if request.form.get('action') in ('change_admin', 'delete_admin'):
+        if not csrf_valid():
+            return "CSRF 검증 실패", 403
+        if not admin_gate_valid():
+            return "관리자 재인증이 필요합니다.", 403
+        session.pop('admin_ip_grant', None)
+        try:
+            if request.form['action']=='change_admin':
+                admin_credentials.change(request.form.get('old_username',''),request.form.get('old_password',''),request.form.get('new_username',''),request.form.get('new_password',''))
+            else:
+                admin_credentials.delete(request.form.get('old_username',''),request.form.get('old_password',''),request.form.get('recovery_code',''))
+            return redirect(url_for('ip_management'))
+        except ValueError as exc:
+            return admin_gate_form(str(exc), 400)
     if request.form.get('action') == 'authenticate':
         failure = admin_gate_login()
         if failure is not None:

@@ -14,6 +14,7 @@ config.SECRET_KEY = "test-session-secret"
 sys.modules["config"] = config
 os.environ["ABOUTCAM_FERNET_KEY"] = Fernet.generate_key().decode()
 os.environ["ABOUTCAM_INVITE_CODE"] = "test-invite"
+os.environ["ABOUTCAM_ADMIN_RECOVERY_CODE"] = "test-recovery-code-long-enough-123"
 
 with tempfile.TemporaryDirectory() as folder:
     with patch.dict(os.environ, {"ABOUTCAM_USERS_DB": os.path.join(folder, "initial.db")}):
@@ -34,6 +35,8 @@ class SecurityTests(unittest.TestCase):
             self.addCleanup(p.stop)
         app_module.accounts.init_db()
         app_module.ip_access.init_db()
+        app_module.admin_credentials.init_db()
+        app_module.admin_credentials.provision("ipowner", "separate-admin-password-123", os.environ["ABOUTCAM_ADMIN_RECOVERY_CODE"])
         app_module.app.config["TESTING"] = True
         app_module.login_failures.clear()
         app_module.system_status["motion_detection"] = False
@@ -51,7 +54,20 @@ class SecurityTests(unittest.TestCase):
     def authorize(self, token):
         return self.client.post("/ip-management", data={
             "csrf_token": token, "action": "authenticate",
-            "admin_username": "test123", "admin_password": "strong-password-123"})
+            "admin_username": "ipowner", "admin_password": "separate-admin-password-123"})
+
+    def test_independent_admin_password_and_recovery(self):
+        token=self.login()
+        self.assertEqual(self.client.get("/ip-management").status_code,200)
+        bad=self.client.post("/ip-management",data={"csrf_token":token,"action":"authenticate","admin_username":"test123","admin_password":"strong-password-123"})
+        self.assertEqual(bad.status_code,401)
+        self.assertEqual(self.authorize(token).status_code,200)
+        changed=self.client.post("/ip-management",data={"csrf_token":token,"action":"change_admin","old_username":"ipowner","old_password":"separate-admin-password-123","new_username":"newadmin","new_password":"new-separate-password-123"})
+        self.assertEqual(changed.status_code,302)
+        self.assertEqual(self.authorize(token).status_code,401)
+        recovered=self.client.post("/ip-management",data={"csrf_token":token,"action":"recover_admin","account_username":"test123","account_password":"strong-password-123","admin_username":"restored","admin_password":"restored-password-123456","recovery_code":os.environ["ABOUTCAM_ADMIN_RECOVERY_CODE"]})
+        self.assertEqual(recovered.status_code,302)
+        self.assertTrue(app_module.admin_credentials.verify("restored","restored-password-123456"))
 
     def test_regular_user_cannot_manage_ips_or_transfer(self):
         viewer_id = app_module.accounts.create_user("viewer01", "viewer-password-123",
