@@ -77,6 +77,17 @@ class SecurityTests(unittest.TestCase):
         self.assertEqual(rows[0]["ip"], "198.51.100.10")
         self.assertFalse(rows[0]["allowed"])
 
+    def test_unapproved_user_sees_waiting_page_not_camera(self):
+        self.login()
+        with patch.object(app_module.threading, "Thread"):
+            r = self.client.get("/", environ_overrides={"REMOTE_ADDR": "198.51.100.10"})
+            self.assertEqual(r.status_code, 302)
+            self.assertIn("/approval-pending", r.headers["Location"])
+            r = self.client.get("/approval-pending", environ_overrides={"REMOTE_ADDR": "198.51.100.10"})
+            self.assertEqual(r.status_code, 200)
+            self.assertIn("승인 대기".encode(), r.data)
+            self.assertEqual(self.client.get("/video_feed", environ_overrides={"REMOTE_ADDR": "198.51.100.10"}).status_code, 403)
+
     def test_approval_and_revocation(self):
         token = self.login()
         self.client.get("/")
