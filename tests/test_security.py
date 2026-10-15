@@ -92,10 +92,10 @@ class SecurityTests(unittest.TestCase):
         self.assertEqual(len(entries), 1)
         self.assertEqual(entries[0]["name"], "관리자 로컬 PC")
         self.assertEqual(self.client.get("/ip-management").status_code, 200)
-        self.assertEqual(self.client.post("/ip-management", data={"ip": "127.0.0.1", "name": "PC", "allowed": "0",
+        self.assertEqual(self.client.post("/ip-management", data={"user_id": self.uid, "ip": "127.0.0.1", "name": "PC", "allowed": "0",
             "csrf_token": token}).status_code, 200)
         self.assertTrue(app_module.ip_access.list_ips(self.uid)[0]["allowed"])
-        self.assertEqual(self.client.post("/ip-management", data={"ip": "127.0.0.1", "name": "내 PC", "allowed": "1",
+        self.assertEqual(self.client.post("/ip-management", data={"user_id": self.uid, "ip": "127.0.0.1", "name": "내 PC", "allowed": "1",
             "csrf_token": token}).status_code, 302)
         self.assertEqual(app_module.ip_access.list_ips(self.uid)[0]["name"], "내 PC")
 
@@ -137,10 +137,10 @@ class SecurityTests(unittest.TestCase):
         token = self.login()
         self.client.get("/")
         self.client.get("/", environ_overrides={"REMOTE_ADDR": "198.51.100.10"})
-        self.assertEqual(self.client.post("/ip-management", data={"ip": "198.51.100.10", "name": "휴대폰",
+        self.assertEqual(self.client.post("/ip-management", data={"user_id": self.uid, "ip": "198.51.100.10", "name": "휴대폰",
             "allowed": "1"}, headers={"X-CSRF-Token": token}).status_code, 302)
         self.assertEqual(self.client.get("/", environ_overrides={"REMOTE_ADDR": "198.51.100.10"}).status_code, 200)
-        self.assertEqual(self.client.post("/ip-management", data={"ip": "198.51.100.10", "name": "휴대폰",
+        self.assertEqual(self.client.post("/ip-management", data={"user_id": self.uid, "ip": "198.51.100.10", "name": "휴대폰",
             "allowed": "0", "csrf_token": token}).status_code, 302)
         self.assertEqual(self.client.get("/", environ_overrides={"REMOTE_ADDR": "198.51.100.10"}).status_code, 302)
 
