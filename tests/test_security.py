@@ -62,7 +62,7 @@ class SecurityTests(unittest.TestCase):
         bad=self.client.post("/ip-management",data={"csrf_token":token,"action":"authenticate","admin_username":"test123","admin_password":"strong-password-123"})
         self.assertEqual(bad.status_code,401)
         self.assertEqual(self.authorize(token).status_code,200)
-        changed=self.client.post("/ip-management",data={"csrf_token":token,"action":"change_admin","old_username":"ipowner","old_password":"separate-admin-password-123","new_username":"newadmin","new_password":"new-separate-password-123"})
+        changed=self.client.post("/admin-settings",data={"csrf_token":token,"action":"change_admin","admin_username":"ipowner","admin_password":"separate-admin-password-123","new_username":"newadmin","new_password":"new-separate-password-123"})
         self.assertEqual(changed.status_code,302)
         self.assertEqual(self.authorize(token).status_code,401)
         recovered=self.client.post("/ip-management",data={"csrf_token":token,"action":"recover_admin","account_username":"test123","account_password":"strong-password-123","admin_username":"restored","admin_password":"restored-password-123456","recovery_code":os.environ["ABOUTCAM_ADMIN_RECOVERY_CODE"]})
@@ -83,44 +83,30 @@ class SecurityTests(unittest.TestCase):
         self.assertEqual(viewer.post("/admin-transfer", data={"csrf_token":token}).status_code, 403)
         self.assertEqual(viewer.get("/").status_code, 302)
 
-    def test_owner_transfer_requires_password_and_revokes_old_owner(self):
+    def test_admin_settings_separate_and_transfer_protected(self):
         other = app_module.accounts.create_user("newowner", "newowner-password-123",
             "https://discord.com/api/webhooks/123456/token")
         token = self.login()
-        self.client.get("/")
-        self.assertTrue(app_module.accounts.is_admin(self.uid))
-        bad = self.client.post("/admin-transfer", data={
-            "csrf_token": token, "username": "newowner", "password": "wrong", "confirm": "TRANSFER"})
-        self.assertEqual(bad.status_code, 403)
-        self.assertTrue(app_module.accounts.is_admin(self.uid))
-        good = self.client.post("/admin-transfer", data={
-            "csrf_token": token, "username": "newowner", "password": "strong-password-123", "confirm": "TRANSFER"})
-        self.assertEqual(good.status_code, 403)
-        self.assertTrue(app_module.accounts.is_admin(self.uid))
-        self.assertFalse(app_module.accounts.is_admin(other))
-        self.login()
-        self.assertEqual(self.client.get("/ip-management").status_code, 200)
+        self.assertEqual(self.client.get("/admin-settings").status_code, 200)
         self.assertEqual(self.client.get("/admin-transfer").status_code, 302)
-
-    def test_inline_owner_transfer_from_ip_management(self):
-        new_id = app_module.accounts.create_user("nextmaster", "nextmaster-password-123",
-            "https://discord.com/api/webhooks/123456/token")
-        token = self.login()
-        page = self.client.get("/ip-management")
-        self.assertIn("관리자 재인증".encode(), page.data)
-        self.assertEqual(self.authorize(token).status_code, 200)
-        wrong = self.client.post("/ip-management", data={
-            "csrf_token": token, "action": "transfer", "username": "nextmaster",
-            "password": "wrong", "confirm": "TRANSFER"})
-        self.assertEqual(wrong.status_code, 200)
+        self.assertEqual(self.client.post("/admin-transfer", data={"csrf_token":token}).status_code,403)
+        self.assertNotIn("관리자 권한 양도".encode(), self.authorize(token).data)
+        self.assertEqual(self.client.post("/ip-management", data={
+            "csrf_token":token,"action":"transfer","username":"newowner",
+            "password":"strong-password-123","confirm":"TRANSFER"}).status_code,403)
+        bad = self.client.post("/admin-settings", data={
+            "csrf_token":token,"action":"transfer","username":"newowner",
+            "account_password":"strong-password-123","admin_username":"ipowner",
+            "admin_password":"wrong","confirm":"TRANSFER"})
+        self.assertEqual(bad.status_code,401)
         self.assertTrue(app_module.accounts.is_admin(self.uid))
-        self.authorize(token)
-        done = self.client.post("/ip-management", data={
-            "csrf_token": token, "action": "transfer", "username": "nextmaster",
-            "password": "strong-password-123", "confirm": "TRANSFER"})
-        self.assertEqual(done.status_code, 302)
+        good = self.client.post("/admin-settings", data={
+            "csrf_token":token,"action":"transfer","username":"newowner",
+            "account_password":"strong-password-123","admin_username":"ipowner",
+            "admin_password":"separate-admin-password-123","confirm":"TRANSFER"})
+        self.assertEqual(good.status_code,302)
         self.assertFalse(app_module.accounts.is_admin(self.uid))
-        self.assertTrue(app_module.accounts.is_admin(new_id))
+        self.assertTrue(app_module.accounts.is_admin(other))
 
     def test_admin_delete_ip_and_reapproval(self):
         token = self.login()
