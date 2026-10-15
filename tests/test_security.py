@@ -81,6 +81,24 @@ class SecurityTests(unittest.TestCase):
         self.assertEqual(self.client.get("/ip-management").status_code, 403)
         self.assertEqual(self.client.get("/admin-transfer").status_code, 403)
 
+    def test_inline_owner_transfer_from_ip_management(self):
+        new_id = app_module.accounts.create_user("nextmaster", "nextmaster-password-123",
+            "https://discord.com/api/webhooks/123456/token")
+        token = self.login()
+        page = self.client.get("/ip-management")
+        self.assertIn("nextmaster".encode(), page.data)
+        wrong = self.client.post("/ip-management", data={
+            "csrf_token": token, "action": "transfer", "username": "nextmaster",
+            "password": "wrong", "confirm": "TRANSFER"})
+        self.assertEqual(wrong.status_code, 200)
+        self.assertTrue(app_module.accounts.is_admin(self.uid))
+        done = self.client.post("/ip-management", data={
+            "csrf_token": token, "action": "transfer", "username": "nextmaster",
+            "password": "strong-password-123", "confirm": "TRANSFER"})
+        self.assertEqual(done.status_code, 302)
+        self.assertFalse(app_module.accounts.is_admin(self.uid))
+        self.assertTrue(app_module.accounts.is_admin(new_id))
+
     def test_admin_delete_ip_and_reapproval(self):
         token = self.login()
         self.client.get("/")
