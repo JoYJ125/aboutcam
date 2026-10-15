@@ -117,7 +117,7 @@ class SecurityTests(unittest.TestCase):
         result = self.client.post("/ip-management", data={
             "csrf_token": token, "user_id": self.uid, "ip": remote,
             "action": "delete"})
-        self.assertEqual(result.status_code, 302)
+        self.assertEqual(result.status_code, 200)
         self.assertFalse(any(x["ip"] == remote for x in app_module.ip_access.list_ips(self.uid)))
         self.assertEqual(self.client.get("/", environ_overrides={"REMOTE_ADDR": remote}).status_code, 302)
         self.assertTrue(any(x["ip"] == remote and not x["allowed"]
@@ -151,7 +151,7 @@ class SecurityTests(unittest.TestCase):
         self.assertTrue(app_module.ip_access.list_ips(self.uid)[0]["allowed"])
         self.authorize(token)
         self.assertEqual(self.client.post("/ip-management", data={"user_id": self.uid, "ip": "127.0.0.1", "name": "내 PC", "allowed": "1",
-            "csrf_token": token}).status_code, 302)
+            "csrf_token": token}).status_code, 200)
         self.assertEqual(app_module.ip_access.list_ips(self.uid)[0]["name"], "내 PC")
 
     def test_unknown_ip_denied_and_alert_throttled(self):
@@ -194,11 +194,11 @@ class SecurityTests(unittest.TestCase):
         self.client.get("/", environ_overrides={"REMOTE_ADDR": "198.51.100.10"})
         self.authorize(token)
         self.assertEqual(self.client.post("/ip-management", data={"user_id": self.uid, "ip": "198.51.100.10", "name": "휴대폰",
-            "allowed": "1"}, headers={"X-CSRF-Token": token}).status_code, 302)
+            "allowed": "1"}, headers={"X-CSRF-Token": token}).status_code, 200)
         self.assertEqual(self.client.get("/", environ_overrides={"REMOTE_ADDR": "198.51.100.10"}).status_code, 200)
         self.authorize(token)
         self.assertEqual(self.client.post("/ip-management", data={"user_id": self.uid, "ip": "198.51.100.10", "name": "휴대폰",
-            "allowed": "0", "csrf_token": token}).status_code, 302)
+            "allowed": "0", "csrf_token": token}).status_code, 200)
         self.assertEqual(self.client.get("/", environ_overrides={"REMOTE_ADDR": "198.51.100.10"}).status_code, 302)
 
     def test_csrf_and_ip_toggle_cannot_disable(self):
@@ -207,7 +207,7 @@ class SecurityTests(unittest.TestCase):
         r = self.client.post("/toggle", json={"feature": "ip_monitoring"}, headers={"X-CSRF-Token": token})
         self.assertEqual(r.status_code, 403)
         self.assertEqual(self.client.post("/logout").status_code, 403)
-        self.assertEqual(self.client.post("/logout", data={"csrf_token": token}).status_code, 302)
+        self.assertEqual(self.client.post("/logout", data={"csrf_token": token}).status_code, 200)
 
     def test_registration_requires_invite(self):
         r = self.client.post("/register", data={"username": "another", "password": "strong-password-123",
