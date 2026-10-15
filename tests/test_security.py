@@ -207,7 +207,7 @@ class SecurityTests(unittest.TestCase):
         r = self.client.post("/toggle", json={"feature": "ip_monitoring"}, headers={"X-CSRF-Token": token})
         self.assertEqual(r.status_code, 403)
         self.assertEqual(self.client.post("/logout").status_code, 403)
-        self.assertEqual(self.client.post("/logout", data={"csrf_token": token}).status_code, 200)
+        self.assertEqual(self.client.post("/logout", data={"csrf_token": token}).status_code, 302)
 
     def test_registration_requires_invite(self):
         r = self.client.post("/register", data={"username": "another", "password": "strong-password-123",
