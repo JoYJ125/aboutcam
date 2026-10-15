@@ -265,6 +265,9 @@ def register():
     error = None
     if request.method == 'POST':
         try:
+            invite = os.getenv('ABOUTCAM_INVITE_CODE', '')
+            if not invite or not hmac.compare_digest(request.form.get('invite_code', ''), invite):
+                raise ValueError('초대 코드가 올바르지 않거나 회원가입이 비활성화되어 있습니다.')
             user_id = accounts.create_user(request.form.get('username', ''), request.form.get('password', ''), request.form.get('webhook', '').strip())
             session.clear()
             session['logged_in'] = True
@@ -286,11 +289,7 @@ def logout():
     return redirect(url_for('login'))
 
 def send_login_fail_alert(ip):
-    try:
-        for webhook in accounts.all_user_webhooks():
-            send_discord_message(webhook, f"⚠️ **[로그인 실패]** IP `{ip}` 에서 잘못된 비밀번호 입력")
-    except Exception as e:
-        print(f"디스코드 전송 에러: {e}")
+    print(f'[로그인 실패] IP: {ip}')
 
 @app.route('/')
 def index():
