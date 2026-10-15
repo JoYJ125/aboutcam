@@ -27,17 +27,20 @@ def init_db():
         )""")
 
 def bootstrap(user_id, ip):
-    """Only automatically trust loopback if the account has no approved IP yet."""
+    """Always restore authenticated loopback access on the server PC.
+
+    Loopback traffic never traverses the LAN; only authenticated users on the
+    server itself benefit. This prevents an accidental local admin lockout.
+    """
     ip = normalize(ip)
     if not ipaddress.ip_address(ip).is_loopback:
         return False
     with connect() as db:
-        existing = db.execute("SELECT 1 FROM allowed_ips WHERE user_id=? AND allowed=1 LIMIT 1", (user_id,)).fetchone()
-        if existing:
-            return False
-        db.execute("INSERT OR IGNORE INTO allowed_ips(user_id,ip,name,allowed) VALUES(?,?,?,1)",
-                   (user_id, ip, "관리자 로컬 PC"))
-        return True
+        db.execute("""INSERT INTO allowed_ips(user_id,ip,name,allowed)
+            VALUES(?,?,?,1)
+            ON CONFLICT(user_id,ip) DO UPDATE SET allowed=1""",
+            (user_id, ip, "메인 컴퓨터 (로컬)"))
+    return True
 
 def check(user_id, ip):
     ip = normalize(ip)
